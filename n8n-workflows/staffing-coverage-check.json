@@ -1,0 +1,93 @@
+{
+  "name": "Morning Staffing Coverage Check — 7:30AM",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "cronExpression", "expression": "30 7 * * 1,2,3,4,5"}]
+        }
+      },
+      "id": "trigger-1",
+      "name": "7:30 AM Weekdays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table8/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-availability-1",
+      "name": "Get Staff Availability",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 250]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table9/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-ratios-1",
+      "name": "Get Room Ratios",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];\nconst today = days[new Date().getDay()];\n\nconst avail = ($input.first().json.records || []).filter(r => r.fields.day_of_week === today);\nconst rooms = ($input.all()[1]?.json?.records || []);\n\nlet issues = [];\nlet coverage = [];\n\nfor (const room of rooms) {\n  const rf = room.fields;\n  const roomName = rf.room_name;\n  const roomWords = roomName.split(' ');\n  \n  // Count staff qualified for this room\n  const qualified = avail.filter(a => {\n    const q = a.fields.rooms_qualified || '';\n    return q.toLowerCase().includes(roomName.toLowerCase()) ||\n           q.toLowerCase().includes(roomWords[0].toLowerCase()) ||\n           q.toLowerCase().includes('all rooms');\n  });\n  \n  const onCallQualified = qualified.filter(a => a.fields.is_on_call);\n  const assigned = qualified.filter(a => !a.fields.is_on_call);\n  \n  coverage.push({\n    room: roomName,\n    enrolled: rf.current_enrolled,\n    max: rf.max_children,\n    ratio: rf.staff_child_ratio,\n    min_staff: rf.min_staff,\n    assigned_count: assigned.length,\n    oncall_count: onCallQualified.length,\n    ok: assigned.length >= rf.min_staff\n  });\n  \n  if (assigned.length < rf.min_staff) {\n    issues.push(`⚠ ${roomName}: ${assigned.length}/${rf.min_staff} staff assigned (${rf.current_enrolled} enrolled, ${rf.staff_child_ratio})`);\n    if (onCallQualified.length > 0) {\n      issues.push(`  💡 On-call available: ${onCallQualified.map(a => `Staff #${a.fields.staff}`).join(', ')}`);\n    }\n  }\n}\n\nconst summary = issues.length > 0\n  ? `📊 *Staffing Alert — ${today}*\\n\\n${issues.join('\\n')}\\n\\nAll rooms: ${coverage.map(c => `${c.room} ${c.ok ? '✓' : '⚠'}`).join(', ')}`\n  : `📊 *Staffing — ${today}*\\n\\n${coverage.map(c => `✓ ${c.room}: ${c.assigned_count} staff, ${c.enrolled}/${c.max} enrolled`).join('\\n')}`;\n\nreturn [{json: {summary, coverage, issues, issue_count: issues.length, today}}];"
+      },
+      "id": "analyze-coverage-1",
+      "name": "Analyze Coverage & Ratios",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 350]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nif (data.issue_count === 0) {\n  return [{json: {notify: false, message: data.summary}}];\n}\n\nconst message = data.summary +\n  `\\n\\nUse /callout <room> in the Telegram bot to find substitutes.`;\n\nreturn [{json: {notify: true, message}}];"
+      },
+      "id": "format-alert-1",
+      "name": "Format Staff Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 350]
+    }
+  ],
+  "connections": {
+    "7:30 AM Weekdays": {
+      "main": [[{"node": "Get Staff Availability", "type": "main", "index": 0}, {"node": "Get Room Ratios", "type": "main", "index": 0}]]
+    },
+    "Get Staff Availability": {
+      "main": [[{"node": "Analyze Coverage & Ratios", "type": "main", "index": 0}]]
+    },
+    "Get Room Ratios": {
+      "main": [[{"node": "Analyze Coverage & Ratios", "type": "main", "index": 1}]]
+    },
+    "Analyze Coverage & Ratios": {
+      "main": [[{"node": "Format Staff Alert", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {"callerPolicy": "workflowsFromSameFolder"},
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

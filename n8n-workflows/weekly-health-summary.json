@@ -1,0 +1,115 @@
+{
+  "name": "Weekly Health Summary — Friday 4PM",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "cronExpression", "expression": "0 16 * * 5"}]
+        }
+      },
+      "id": "trigger-1",
+      "name": "4:00 PM Friday",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table2/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-children-1",
+      "name": "Get Children (allergies)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 250]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table12/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-incidents-1",
+      "name": "Get Incidents",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 450]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table4/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-attendance-1",
+      "name": "Get This Week's Attendance",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 650]
+    },
+    {
+      "parameters": {
+        "jsCode": "const children = ($input.all()[0]?.json?.records || []);\nconst incidents = ($input.all()[1]?.json?.records || []);\nconst attendance = ($input.all()[2]?.json?.records || []);\n\nconst now = new Date();\nconst weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);\nconst weekStr = weekAgo.toISOString().split('T')[0];\n\n// Allergy summary\nconst allergies = children\n  .filter(c => c.fields.allergies && c.fields.allergies !== 'None' && c.fields.allergies !== 'none')\n  .map(c => `${c.fields.first_name} ${c.fields.last_name}: ${c.fields.allergies}`);\n\n// Recent incidents\nconst recentIncidents = incidents.filter(i => i.fields.date >= weekStr);\nconst incidentTypes = {};\nfor (const inc of recentIncidents) {\n  const t = inc.fields.incident_type || 'Other';\n  incidentTypes[t] = (incidentTypes[t] || 0) + 1;\n}\n\n// Attendance stats\nconst recentAttendance = attendance.filter(a => a.fields.date >= weekStr);\nconst checkinsWithTime = recentAttendance.filter(a => a.fields.check_in);\nconst totalChildDays = new Set(recentAttendance.map(a => `${a.fields.child}-${a.fields.date}`)).size;\n\n// Format\nlet message = `🏥 *Weekly Health Summary*\\n`;\nmessage += `Week ending: ${now.toISOString().split('T')[0]}\\n\\n`;\n\nmessage += `*Food Allergies (${allergies.length}):*\\n`;\nallergies.forEach(a => message += `• ${a}\\n`);\nmessage += `\\n`;\n\nmessage += `*Incidents This Week:* ${recentIncidents.length}\\n`;\nif (recentIncidents.length > 0) {\n  for (const [type, count] of Object.entries(incidentTypes)) {\n    message += `• ${type}: ${count}\\n`;\n  }\n  recentIncidents.forEach(i => {\n    message += `  - ${i.fields.date}: Child #${i.fields.child} — ${i.fields.incident_type}\\n`;\n  });\n}\nmessage += `\\n`;\n\nmessage += `*Attendance:* ${totalChildDays} child-days this week`;\n\nreturn [{json: {message, allergy_count: allergies.length, incident_count: recentIncidents.length, attendance_days: totalChildDays}}];"
+      },
+      "id": "compile-summary-1",
+      "name": "Compile Health Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst message = data.message + `\\n\\n💡 *Reminder:* Verify kitchen allergen substitutions are documented.`;\nreturn [{json: {message, notify: data.incident_count > 0 || data.allergy_count > 3}}];"
+      },
+      "id": "finalize-1",
+      "name": "Finalize & Flag",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 400]
+    }
+  ],
+  "connections": {
+    "4:00 PM Friday": {
+      "main": [[{"node": "Get Children (allergies)", "type": "main", "index": 0}, {"node": "Get Incidents", "type": "main", "index": 0}, {"node": "Get This Week's Attendance", "type": "main", "index": 0}]]
+    },
+    "Get Children (allergies)": {
+      "main": [[{"node": "Compile Health Summary", "type": "main", "index": 0}]]
+    },
+    "Get Incidents": {
+      "main": [[{"node": "Compile Health Summary", "type": "main", "index": 1}]]
+    },
+    "Get This Week's Attendance": {
+      "main": [[{"node": "Compile Health Summary", "type": "main", "index": 2}]]
+    },
+    "Compile Health Summary": {
+      "main": [[{"node": "Finalize & Flag", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {"callerPolicy": "workflowsFromSameFolder"},
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

@@ -1,0 +1,119 @@
+services:
+  grist:
+    image: gristlabs/grist:latest
+    container_name: daycare-grist
+    restart: unless-stopped
+    environment:
+      GRIST_DEFAULT_EMAIL: ${GRIST_EMAIL}
+      GRIST_DEFAULT_PASSWORD: ${GRIST_PASSWORD}
+      GRIST_SANDBOX_FLAVOR: gvisor
+    volumes:
+      - grist_data:/persist
+    ports:
+      - "127.0.0.1:8096:8484"
+    networks:
+      - demo-daycare-net
+
+  bot:
+    build: ./bot
+    container_name: daycare-bot
+    restart: unless-stopped
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      GRIST_API_KEY: ${GRIST_API_KEY}
+      GRIST_DOC_ID: ${GRIST_DOC_ID}
+      GRIST_BASE_URL: http://grist:8484
+      OLLAMA_URL: http://ollama:11434
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      API_KEY: ${API_KEY}                         # shared secret for Flask API auth
+      STAFF_CHAT_IDS: ${STAFF_CHAT_IDS}           # comma-separated Telegram chat IDs of staff
+      PORT: "8097"
+      GUNICORN_WORKERS: "1"
+      GUNICORN_THREADS: "8"
+      GUNICORN_TIMEOUT: "120"
+    ports:
+      - "127.0.0.1:8097:8097"
+    depends_on:
+      - grist
+      - ollama
+    networks:
+      - demo-daycare-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: daycare-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    networks:
+      - demo-daycare-net
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: daycare-n8n
+    restart: unless-stopped
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_EMAIL}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD}
+      N8N_HOST: demo-daycare.66.94.122.133.sslip.io
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://demo-daycare.66.94.122.133.sslip.io:8446
+      GRIST_API_KEY: ${GRIST_API_KEY}
+      GRIST_DOC_ID: ${GRIST_DOC_ID}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      API_KEY: ${API_KEY}
+      TELEGRAM_ALERT_CHAT_ID: ${TELEGRAM_ALERT_CHAT_ID}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    ports:
+      - "127.0.0.1:8098:5678"
+    networks:
+      - demo-daycare-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: daycare-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "127.0.0.1:8099:9000"
+      - "127.0.0.1:9001:9001"
+    networks:
+      - demo-daycare-net
+
+  nginx:
+    build: ./nginx
+    container_name: daycare-nginx
+    restart: unless-stopped
+    dns_opt:
+      - ndots:1
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    ports:
+      - "0.0.0.0:8445:8445"
+      - "0.0.0.0:8446:8446"
+    depends_on:
+      - grist
+      - bot
+      - n8n
+    networks:
+      - demo-daycare-net
+
+volumes:
+  grist_data:
+  ollama_data:
+  n8n_data:
+  minio_data:
+
+networks:
+  demo-daycare-net:
+    driver: bridge

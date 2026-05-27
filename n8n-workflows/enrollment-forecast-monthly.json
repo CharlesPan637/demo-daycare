@@ -1,0 +1,80 @@
+{
+  "name": "Enrollment Forecast — 1st of Month",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "cronExpression", "expression": "0 9 1 * *"}]
+        }
+      },
+      "id": "trigger-1",
+      "name": "9:00 AM, 1st of Month",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table11/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-enrollment-1",
+      "name": "Get Enrollment History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 250]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table2/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-children-1",
+      "name": "Get Current Children",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "const history = ($input.first().json.records || []).sort((a, b) => a.fields.month.localeCompare(b.fields.month));\nconst children = ($input.all()[1]?.json?.records || []);\n\nconst active = children.filter(c => (c.fields.status || '').toLowerCase() !== 'inactive');\nconst waitlist = 5;\n\nlet message = `📈 *Monthly Enrollment Report*\\n`;\nmessage += `Date: ${new Date().toISOString().split('T')[0]}\\n\\n`;\n\nmessage += `*Current Status:*\\n`;\nmessage += `Active enrollment: ${active.length} children\\n`;\nmessage += `Waitlist: ${waitlist} families\\n\\n`;\n\nmessage += `*6-Month Trend:*\\n`;\nconst last6 = history.slice(-6);\nfor (const h of last6) {\n  const f = h.fields;\n  const bar = '█'.repeat(f.total_enrolled);\n  message += `${f.month}: ${bar} ${f.total_enrolled} enrolled | $${f.monthly_revenue?.toLocaleString()}\\n`;\n}\n\nif (last6.length >= 2) {\n  const first = last6[0].fields;\n  const last = last6[last6.length - 1].fields;\n  const revChange = ((last.monthly_revenue - first.monthly_revenue) / first.monthly_revenue * 100);\n  message += `\\n*Revenue:* $${last.monthly_revenue?.toLocaleString()}/mo`;\n  message += `\\n6-month change: ${revChange >= 0 ? '+' : ''}${revChange.toFixed(1)}%`;\n}\n\n// Enrolled by room\nconst roomCounts = {};\nfor (const c of active) {\n  const room = c.fields.age_group || 'Unassigned';\n  roomCounts[room] = (roomCounts[room] || 0) + 1;\n}\nmessage += `\\n\\n*By Room:*\\n`;\nconst roomLabels = {'Toddler': 'Toddler (2/6)', 'Preschool': 'Preschool (4/10)', 'Pre-K': 'Pre-K (2/12)', 'Infant': 'Infant (0/4)'};\nfor (const [room, count] of Object.entries(roomCounts)) {\n  message += `• ${room}: ${count} ${roomLabels[room] || ''}\\n`;\n}\n\nconst capacity = 32;\nconst utilization = (active.length / capacity * 100).toFixed(0);\nmessage += `\\n*Capacity utilization:* ${utilization}% (${active.length}/${capacity})`;\n\nreturn [{json: {message, active_count: active.length, waitlist, utilization: parseInt(utilization)}}];"
+      },
+      "id": "compile-forecast-1",
+      "name": "Compile Forecast Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 350]
+    }
+  ],
+  "connections": {
+    "9:00 AM, 1st of Month": {
+      "main": [[{"node": "Get Enrollment History", "type": "main", "index": 0}, {"node": "Get Current Children", "type": "main", "index": 0}]]
+    },
+    "Get Enrollment History": {
+      "main": [[{"node": "Compile Forecast Report", "type": "main", "index": 0}]]
+    },
+    "Get Current Children": {
+      "main": [[{"node": "Compile Forecast Report", "type": "main", "index": 1}]]
+    }
+  },
+  "settings": {"callerPolicy": "workflowsFromSameFolder"},
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific artifacts
+*.key
+*.pem
+certs/
+docker_volumes/
+scripts/venv/
+backups/
+*.tar.gz
+.vscode/
+.idea/
