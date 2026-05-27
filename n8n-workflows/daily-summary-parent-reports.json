@@ -1,0 +1,102 @@
+{
+  "name": "Daily Summary — 4PM Parent Reports",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "cronExpression", "expression": "0 16 * * 1,2,3,4,5"}]
+        }
+      },
+      "id": "trigger-1",
+      "name": "4:00 PM Weekdays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table2/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-children-1",
+      "name": "Get All Active Children",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://grist:8484/api/docs/{{$env.GRIST_DOC_ID}}/tables/Table7/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Authorization", "value": "Bearer {{$env.GRIST_API_KEY}}"}
+          ]
+        }
+      },
+      "id": "get-reports-1",
+      "name": "Get Today's Reports",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Match today's reports to children and format messages\nconst children = $input.first().json.records || [];\nconst reports = $input.all()[1]?.json?.records || [];\nconst today = new Date().toISOString().split('T')[0];\n\nconst todayReports = reports.filter(r => r.fields.date === today);\nconst messages = [];\n\nfor (const child of children) {\n  const report = todayReports.find(r => String(r.fields.child) === String(child.id));\n  if (report) {\n    const c = child.fields;\n    const r = report.fields;\n    messages.push({\n      child_name: c.first_name,\n      chat_id: c.parent_chat_id,\n      message: `📋 *Daily Report — ${c.first_name} ${c.last_name}*\\n` +\n        `Date: ${r.date}\\n\\n` +\n        `🍽 *Meals*\\nBreakfast: ${r.breakfast || 'N/A'}\\nLunch: ${r.lunch || 'N/A'}\\nSnack: ${r.snack || 'N/A'}\\n\\n` +\n        `😴 *Nap*: ${r.nap_start || 'N/A'} – ${r.nap_end || 'N/A'}\\n` +\n        `😊 *Mood*: ${r.mood || 'N/A'}\\n` +\n        `🎨 *Activities*: ${r.activities_summary || 'N/A'}`\n    });\n  }\n}\n\nreturn messages.map(m => ({json: m}));"
+      },
+      "id": "format-1",
+      "name": "Format Parent Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "chat_id", "value": "={{$json.chat_id}}"},
+            {"name": "text", "value": "={{$json.message}}"},
+            {"name": "parse_mode", "value": "Markdown"}
+          ]
+        }
+      },
+      "id": "send-telegram-1",
+      "name": "Send to Parent via Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 400]
+    }
+  ],
+  "connections": {
+    "Get All Active Children": {
+      "main": [[{"node": "Format Parent Messages", "type": "main", "index": 0}]]
+    },
+    "Get Today's Reports": {
+      "main": [[{"node": "Format Parent Messages", "type": "main", "index": 1}]]
+    },
+    "Format Parent Messages": {
+      "main": [[{"node": "Send to Parent via Telegram", "type": "main", "index": 0}]]
+    },
+    "4:00 PM Weekdays": {
+      "main": [[{"node": "Get All Active Children", "type": "main", "index": 0}, {"node": "Get Today's Reports", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {"callerPolicy": "workflowsFromSameFolder"},
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

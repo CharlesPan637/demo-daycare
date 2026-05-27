@@ -1,0 +1,179 @@
+{
+  "name": "Subsidy Reconciliation Alert — 9:15AM Daily",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "15 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "9:15 AM Weekdays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://bot:8097/subsidy/claims",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        }
+      },
+      "id": "get-claims-1",
+      "name": "Get Subsidy Claims",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const claims = $input.first().json.claims || [];\nconst flagged = [];\nfor (const item of claims) {\n  const f = item.fields || {};\n  const expected = Number(f.expected_amount || 0);\n  const received = Number(f.received_amount || 0);\n  const variance = Number(f.variance || (received - expected));\n  const status = String(f.status || '').toLowerCase();\n  if (variance !== 0 || status === 'variance') {\n    flagged.push({id: item.id, claim_month: f.claim_month, program: f.program, child: f.child, expected, received, variance, status});\n  }\n  if ((status === 'submitted' || status === 'pending') && received <= 0) {\n    flagged.push({id: item.id, claim_month: f.claim_month, program: f.program, child: f.child, expected, received, variance, status, reason: 'unpaid_claim'});\n  }\n}\nif (!flagged.length) {\n  return [{json: {notify: false, message: '✅ No subsidy reconciliation variances or overdue unpaid claims.'}}];\n}\nlet msg = '💰 *Subsidy Reconciliation Alert*\\n\\n';\nmsg += `Flagged claims: ${flagged.length}\\n\\n`;\nfor (const row of flagged.slice(0, 15)) {\n  const badge = row.variance > 0 ? '🟢' : (row.variance < 0 ? '🔴' : '🟡');\n  msg += `${badge} Claim #${row.id} | ${row.claim_month || 'n/a'} | ${row.program || 'n/a'}\\n`;\n  msg += `Child #${row.child} | expected $${row.expected.toFixed(2)} | received $${row.received.toFixed(2)} | variance $${row.variance.toFixed(2)}\\n`;\n  msg += `Status: ${row.status}${row.reason ? ` (${row.reason})` : ''}\\n\\n`;\n}\nreturn [{json: {notify: true, message: msg, flagged_count: flagged.length}}];"
+      },
+      "id": "format-alert-1",
+      "name": "Find Variance Claims",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "notify-true",
+              "leftValue": "={{$json.notify}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-notify-1",
+      "name": "Should Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{$env.TELEGRAM_ALERT_CHAT_ID}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json.message}}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        }
+      },
+      "id": "send-telegram-1",
+      "name": "Send Reconciliation Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1050,
+        250
+      ]
+    }
+  ],
+  "connections": {
+    "9:15 AM Weekdays": {
+      "main": [
+        [
+          {
+            "node": "Get Subsidy Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Subsidy Claims": {
+      "main": [
+        [
+          {
+            "node": "Find Variance Claims",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Variance Claims": {
+      "main": [
+        [
+          {
+            "node": "Should Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Notify?": {
+      "main": [
+        [
+          {
+            "node": "Send Reconciliation Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "callerPolicy": "workflowsFromSameFolder"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

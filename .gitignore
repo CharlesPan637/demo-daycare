@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+*.key
+*.pem
+certs/
+
+# Docker volumes
+docker_volumes/
+
+# Python
+__pycache__/
+*.pyc
+scripts/venv/
+
+# Backups
+backups/
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
