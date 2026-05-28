@@ -92,11 +92,18 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
 
 ## Formal Verification Statement (2026-05-28T17:30:23Z)
 - Operational verification pass completed with live environment checks.
-- `scripts/daily_ops_check.sh` => PASS (includes multi-touch QA guards).
-- `tests/test_p0_regression.py` => PASS (11 tests).
+- `scripts/daily_ops_check.sh` => PASS (includes multi-touch QA guards and staffing unresolved-gap guardrail).
+- `tests/test_p0_regression.py` => PASS (12 tests).
 - Workflow evidence:
   - `mktgPulseWkly26A` activeVersion updated with spend + multi-touch blocks.
   - `mktgPulseExec26A` execution success with Telegram delivery and heartbeat updates.
 - Formal sign-off status:
   - P0 operational release: **SIGNED OFF**.
   - Strict closure ("all pain points addressed"): **NOT READY**.
+
+## Verification Addendum (2026-05-28T17:39:36Z)
+- Re-ran `scripts/daily_ops_check.sh` after deploying `45b74f8` staffing optimization changes.
+- Result: **PASS**
+  - `staffing_status=200`
+  - `staffing_unresolved_predicted_gap_rooms=0`
+  - `staffing_unresolved_max=0`
