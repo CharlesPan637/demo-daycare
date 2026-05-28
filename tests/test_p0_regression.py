@@ -346,6 +346,29 @@ class P0RegressionTest(unittest.TestCase):
         self.assertAlmostEqual(payload.get("totals", {}).get("weighted_cpa"), 250.0, places=2)
         self.assertAlmostEqual(payload.get("totals", {}).get("weighted_cpa_change_vs_prior_month"), 100.0, places=2)
 
+    def test_marketing_attribution_weights(self):
+        get_resp = self.client.get("/marketing/attribution/weights", headers=self._auth_headers())
+        self.assertEqual(get_resp.status_code, 200)
+        original = get_resp.get_json()
+        self.assertAlmostEqual(original.get("sum"), 1.0, places=4)
+
+        bad_resp = self.client.post(
+            "/marketing/attribution/weights",
+            json={"first_touch": 0.5, "middle_touch_total": 0.5, "last_touch": 0.5},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(bad_resp.status_code, 400)
+
+        ok_resp = self.client.post(
+            "/marketing/attribution/weights",
+            json={"first_touch": 0.3, "middle_touch_total": 0.4, "last_touch": 0.3},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(ok_resp.status_code, 200)
+        updated = ok_resp.get_json()
+        self.assertEqual(updated.get("status"), "updated")
+        self.assertAlmostEqual(updated.get("sum"), 1.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

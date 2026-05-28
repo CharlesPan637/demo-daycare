@@ -1312,6 +1312,15 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "notes": {"type": "string"},
         },
     },
+    ("POST", "/marketing/attribution/weights"): {
+        "type": "object",
+        "required": ["first_touch", "middle_touch_total", "last_touch"],
+        "properties": {
+            "first_touch": {"type": "number", "minimum": 0, "maximum": 1},
+            "middle_touch_total": {"type": "number", "minimum": 0, "maximum": 1},
+            "last_touch": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+    },
 }
 
 QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
@@ -1391,6 +1400,7 @@ QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
         {"name": "period_month", "schema": {"type": "string"}},
         {"name": "model", "schema": {"type": "string", "enum": ["first_touch", "last_touch", "position_based"]}},
     ],
+    ("GET", "/marketing/attribution/weights"): [],
 }
 
 IDEMPOTENT_ENDPOINTS: set[tuple[str, str]] = {
@@ -1871,6 +1881,20 @@ MARKETING_LEAD_STATUSES = {"new", "contacted", "tour_scheduled", "converted", "l
 REVIEW_PLATFORMS = {"google", "yelp", "facebook", "other"}
 REVIEW_STATUSES = {"pending", "requested", "received", "flagged"}
 INSURANCE_POLICY_STATUSES = {"active", "pending", "expired", "cancelled"}
+
+def _safe_weight(env_name: str, default: float) -> float:
+    """Parse a float weight from env, falling back to default on invalid values."""
+    try:
+        return float(str(os.getenv(env_name, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+ATTRIBUTION_WEIGHTS: dict[str, float] = {
+    "first_touch": _safe_weight("ATTRIBUTION_WEIGHT_FIRST", 0.4),
+    "middle_touch_total": _safe_weight("ATTRIBUTION_WEIGHT_MIDDLE_TOTAL", 0.2),
+    "last_touch": _safe_weight("ATTRIBUTION_WEIGHT_LAST", 0.4),
+}
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -4227,6 +4251,46 @@ def api_marketing_attribution_touchpoints_create():
     return jsonify({"status": "created", "touchpoint_id": result.get("id")}), 201
 
 
+@app.route("/marketing/attribution/weights", methods=["GET"])
+def api_marketing_attribution_weights_get():
+    """Return current position-based attribution weights."""
+    return jsonify({
+        "first_touch": ATTRIBUTION_WEIGHTS["first_touch"],
+        "middle_touch_total": ATTRIBUTION_WEIGHTS["middle_touch_total"],
+        "last_touch": ATTRIBUTION_WEIGHTS["last_touch"],
+        "sum": round(
+            ATTRIBUTION_WEIGHTS["first_touch"]
+            + ATTRIBUTION_WEIGHTS["middle_touch_total"]
+            + ATTRIBUTION_WEIGHTS["last_touch"],
+            6,
+        ),
+    })
+
+
+@app.route("/marketing/attribution/weights", methods=["POST"])
+def api_marketing_attribution_weights_set():
+    """Set position-based attribution weights at runtime."""
+    data = request.get_json(force=True, silent=True) or {}
+    first = _to_float(data.get("first_touch"))
+    middle = _to_float(data.get("middle_touch_total"))
+    last = _to_float(data.get("last_touch"))
+    if first < 0 or middle < 0 or last < 0:
+        return jsonify({"error": "weights must be >= 0"}), 400
+    total = round(first + middle + last, 6)
+    if abs(total - 1.0) > 0.0001:
+        return jsonify({"error": "weights must sum to 1.0", "sum": total}), 400
+    ATTRIBUTION_WEIGHTS["first_touch"] = first
+    ATTRIBUTION_WEIGHTS["middle_touch_total"] = middle
+    ATTRIBUTION_WEIGHTS["last_touch"] = last
+    return jsonify({
+        "status": "updated",
+        "first_touch": ATTRIBUTION_WEIGHTS["first_touch"],
+        "middle_touch_total": ATTRIBUTION_WEIGHTS["middle_touch_total"],
+        "last_touch": ATTRIBUTION_WEIGHTS["last_touch"],
+        "sum": round(first + middle + last, 6),
+    })
+
+
 @app.route("/marketing/attribution/multi-touch", methods=["GET"])
 def api_marketing_attribution_multi_touch():
     """Return weighted attribution by channel using first/last/position-based models."""
@@ -4293,15 +4357,18 @@ def api_marketing_attribution_multi_touch():
             if len(channels) == 1:
                 alloc[channels[0]] = 1.0
             elif len(channels) == 2:
-                alloc[channels[0]] = 0.5
-                alloc[channels[1]] = alloc.get(channels[1], 0.0) + 0.5
+                # No middle touches; split middle share evenly across first/last.
+                first_share = ATTRIBUTION_WEIGHTS["first_touch"] + (ATTRIBUTION_WEIGHTS["middle_touch_total"] / 2.0)
+                last_share = ATTRIBUTION_WEIGHTS["last_touch"] + (ATTRIBUTION_WEIGHTS["middle_touch_total"] / 2.0)
+                alloc[channels[0]] = first_share
+                alloc[channels[1]] = alloc.get(channels[1], 0.0) + last_share
             else:
                 first = channels[0]
                 last = channels[-1]
-                alloc[first] = 0.4
-                alloc[last] = alloc.get(last, 0.0) + 0.4
+                alloc[first] = ATTRIBUTION_WEIGHTS["first_touch"]
+                alloc[last] = alloc.get(last, 0.0) + ATTRIBUTION_WEIGHTS["last_touch"]
                 middle = channels[1:-1]
-                share = 0.2 / len(middle)
+                share = ATTRIBUTION_WEIGHTS["middle_touch_total"] / len(middle)
                 for ch in middle:
                     alloc[ch] = alloc.get(ch, 0.0) + share
 
