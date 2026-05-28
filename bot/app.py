@@ -968,6 +968,11 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "requested_by_guardian": {"type": "ref"},
             "approved_by_staff": {"type": "ref"},
             "method": {"type": "string"},
+            "document_type": {"type": "string", "enum": ["driver_license", "state_id", "passport", "other"]},
+            "document_id_last4": {"type": "string"},
+            "presented_name": {"type": "string"},
+            "verified_by_staff": {"type": "ref"},
+            "verified_at": {"type": "string", "format": "date-time"},
             "denial_reason": {"type": "string"},
             "timestamp": {"type": "string", "format": "date-time"},
             "denial_code": {"type": "string"},
@@ -2589,6 +2594,18 @@ def api_pickup_event():
     approved_bool = _to_bool(approved)
     denial_code = str(data.get("denial_code", "")).strip().lower()
     override_used = _to_bool(data.get("override_used", False))
+    document_type = str(data.get("document_type", "")).strip().lower()
+    document_id_last4 = re.sub(r"[^0-9A-Za-z]", "", str(data.get("document_id_last4", "")).strip())[-4:]
+    presented_name = str(data.get("presented_name", "")).strip()
+    verified_by_staff = data.get("verified_by_staff")
+    verified_at = data.get("verified_at")
+
+    if document_type and document_type not in {"driver_license", "state_id", "passport", "other"}:
+        return jsonify({"error": "document_type must be one of driver_license,state_id,passport,other"}), 400
+    if document_type and len(document_id_last4) != 4:
+        return jsonify({"error": "document_id_last4 must be 4 characters when document_type is provided"}), 400
+    if document_type and not presented_name:
+        return jsonify({"error": "presented_name is required when document_type is provided"}), 400
 
     if not approved_bool:
         if not denial_code:
@@ -2617,6 +2634,11 @@ def api_pickup_event():
         method=str(data.get("method", "manual")),
         denial_reason=str(data.get("denial_reason", "")),
         timestamp=data.get("timestamp"),
+        document_type=document_type,
+        document_id_last4=document_id_last4,
+        presented_name=presented_name,
+        verified_by_staff=_to_grist_id(verified_by_staff),
+        verified_at=verified_at,
         denial_code=denial_code,
         override_used=override_used,
         override_reason=override_reason,

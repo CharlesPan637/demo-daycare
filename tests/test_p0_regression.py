@@ -57,6 +57,8 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(verify.get_json().get("allowed"), True)
 
         self.mod.add_pickup_event = lambda **kwargs: {"id": 101}
+        captured = {}
+        self.mod.add_pickup_event = lambda **kwargs: (captured.update(kwargs) or {"id": 101})
         denied = self.client.post(
             "/pickup/events",
             json={"child_id": 1, "approved": False, "denial_code": "pickup_not_allowed", "denial_reason": "Policy"},
@@ -78,6 +80,24 @@ class P0RegressionTest(unittest.TestCase):
         )
         self.assertEqual(override.status_code, 200)
         self.assertEqual(override.get_json().get("status"), "logged")
+
+        with_doc = self.client.post(
+            "/pickup/events",
+            json={
+                "child_id": 1,
+                "approved": True,
+                "document_type": "driver_license",
+                "document_id_last4": "AB-1234",
+                "presented_name": "Jamie Stone",
+                "verified_by_staff": 9,
+            },
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(with_doc.status_code, 200)
+        self.assertEqual(captured.get("document_type"), "driver_license")
+        self.assertEqual(captured.get("document_id_last4"), "1234")
+        self.assertEqual(captured.get("presented_name"), "Jamie Stone")
+        self.assertEqual(captured.get("verified_by_staff"), 9)
 
     def test_pickup_authorization_check(self):
         self.mod.get_child_guardian_links = lambda child_id_val: [

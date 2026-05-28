@@ -25,8 +25,9 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 
 ## 3) Custody/unauthorized pickup safety — **PARTIAL (improved)**
 - Guardian linking + pickup verification/audit plus identity/document authorization pre-check are implemented (`POST /pickup/authorization/check`), including name matching, legal restriction enforcement, and court-order override requirements.
+- Pickup audit now persists verification metadata (`document_type`, `document_id_last4`, `presented_name`, `verified_by_staff`, `verified_at`) for chain-of-custody records.
 - Remaining gap: document image capture/retention and external ID verification integrations are not yet implemented.
-- Evidence: `bot/app.py:1026`, `bot/app.py:1113`, `bot/app.py:1193`, `bot/app.py:2544`, `tests/test_p0_regression.py:88`
+- Evidence: `bot/app.py:1026`, `bot/app.py:1113`, `bot/app.py:1193`, `bot/app.py:2544`, `bot/app.py:2612`, `bot/grist_client.py:698`, `scripts/migrate_p0_tables.py:109`, `tests/test_p0_regression.py:88`
 
 ## 4) Compliance documentation — **ADDRESSED (core)**
 - Medication administration logs, sanitation checks, sleep-safety checks are implemented at API, table, and workflow levels.

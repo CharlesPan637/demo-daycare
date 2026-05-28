@@ -700,7 +700,10 @@ def add_pickup_event(child_id_val: int | str, requested_by_guardian: int | str |
                      method: str = "manual", denial_reason: str = "",
                      timestamp: str | None = None, denial_code: str = "",
                      override_used: bool = False, override_reason: str = "",
-                     override_approved_by: int | str | None = None) -> dict | None:
+                     override_approved_by: int | str | None = None,
+                     document_type: str = "", document_id_last4: str = "",
+                     presented_name: str = "", verified_by_staff: int | str | None = None,
+                     verified_at: str | None = None) -> dict | None:
     """Create a pickup verification/audit event."""
     from datetime import datetime
     event_time = timestamp or datetime.utcnow().isoformat(timespec="seconds")
@@ -712,6 +715,11 @@ def add_pickup_event(child_id_val: int | str, requested_by_guardian: int | str |
             "approved_by_staff": _as_grist_id(approved_by_staff),
             "method": method,
             "timestamp": event_time,
+            "document_type": document_type,
+            "document_id_last4": document_id_last4,
+            "presented_name": presented_name,
+            "verified_by_staff": _as_grist_id(verified_by_staff),
+            "verified_at": verified_at or event_time,
             "denial_reason": denial_reason,
             "denial_code": denial_code,
             "override_used": override_used,
