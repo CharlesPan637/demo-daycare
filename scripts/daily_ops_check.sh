@@ -29,6 +29,11 @@ mt_code=$(curl -s -o /tmp/daily_multitouch.out -w '%{http_code}' -H "X-API-Key: 
 mt_count=$(jq -r '.count // -1' /tmp/daily_multitouch.out 2>/dev/null || echo -1)
 mt_weighted_cpa_shift=$(jq -r '.totals.weighted_cpa_change_vs_prior_month // "null"' /tmp/daily_multitouch.out 2>/dev/null || echo "null")
 mt_weighted_conversions=$(jq -r '.totals.weighted_conversions // 0' /tmp/daily_multitouch.out 2>/dev/null || echo 0)
+staffing_code=$(curl -s -o /tmp/daily_staffing.out -w '%{http_code}' -H "X-API-Key: $API_KEY" "$BASE_URL/staffing/risk-summary")
+staffing_unresolved=$(jq -r '.unresolved_predicted_gap_rooms // -1' /tmp/daily_staffing.out 2>/dev/null || echo -1)
+staffing_rebalancing_actions=$(jq -r '.schedule_optimization.rebalancing_actions // 0' /tmp/daily_staffing.out 2>/dev/null || echo 0)
+staffing_shift_extension_actions=$(jq -r '.schedule_optimization.shift_extension_actions // 0' /tmp/daily_staffing.out 2>/dev/null || echo 0)
+staffing_unresolved_max=${STAFFING_UNRESOLVED_MAX:-0}
 
 echo "[daily_ops] health_status=$health_code"
 echo "[daily_ops] unauth_waitlist_status=$unauth_code"
@@ -39,6 +44,11 @@ echo "[daily_ops] multitouch_status=$mt_code"
 echo "[daily_ops] multitouch_count=$mt_count"
 echo "[daily_ops] multitouch_weighted_cpa_shift=$mt_weighted_cpa_shift"
 echo "[daily_ops] multitouch_weighted_conversions=$mt_weighted_conversions"
+echo "[daily_ops] staffing_status=$staffing_code"
+echo "[daily_ops] staffing_unresolved_predicted_gap_rooms=$staffing_unresolved"
+echo "[daily_ops] staffing_rebalancing_actions=$staffing_rebalancing_actions"
+echo "[daily_ops] staffing_shift_extension_actions=$staffing_shift_extension_actions"
+echo "[daily_ops] staffing_unresolved_max=$staffing_unresolved_max"
 
 if [[ "$health_code" != "200" ]]; then
   echo "[daily_ops] FAIL: health expected 200"
@@ -78,6 +88,18 @@ if [[ "$mt_weighted_cpa_shift" != "null" ]]; then
     echo "[daily_ops] FAIL: weighted CPA shift exceeds threshold (1000)"
     exit 1
   fi
+fi
+if [[ "$staffing_code" != "200" ]]; then
+  echo "[daily_ops] FAIL: staffing risk-summary endpoint expected 200"
+  exit 1
+fi
+if [[ "$staffing_unresolved" == "-1" ]]; then
+  echo "[daily_ops] FAIL: staffing risk-summary parse failed"
+  exit 1
+fi
+if (( staffing_unresolved > staffing_unresolved_max )); then
+  echo "[daily_ops] FAIL: staffing unresolved predicted gaps exceed threshold"
+  exit 1
 fi
 
 echo "[daily_ops] PASS"
