@@ -23,6 +23,17 @@
       ]
     },
     {
+      "parameters": {},
+      "id": "manual-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        180
+      ]
+    },
+    {
       "parameters": {
         "method": "POST",
         "url": "http://bot:8097/waitlist/scoring/run",
@@ -135,10 +146,6 @@
             {
               "name": "text",
               "value": "={{$json.message}}"
-            },
-            {
-              "name": "parse_mode",
-              "value": "Markdown"
             }
           ]
         }
@@ -219,6 +226,17 @@
     }
   ],
   "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Score Waitlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "10:30 AM Weekdays": {
       "main": [
         [

@@ -134,3 +134,10 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
 - Result: **PASS**
   - `waitlist_orchestration_coverage_status=200`
   - `waitlist_high_risk_missing_next_action=0`
+
+## Verification Addendum (2026-05-28T18:14:31Z)
+- Synced updated waitlist stage playbook workflow to n8n and executed it once in isolated CLI mode.
+- Result: **SUCCESS**
+  - Workflow: `cR7sK2mN9vL4pTxQ` (`Waitlist Stage Playbook — 10:30AM Weekdays`)
+  - Orchestration + action application nodes executed and updated waitlist records.
+  - Telegram alert node switched to plain text (no Markdown parse failures).
