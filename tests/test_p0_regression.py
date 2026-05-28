@@ -309,6 +309,43 @@ class P0RegressionTest(unittest.TestCase):
         self.assertAlmostEqual(items[1]["blended_cpl"], 300.0, places=2)
         self.assertAlmostEqual(items[1]["mom_cpl_change"], 200.0, places=2)
 
+    def test_marketing_multi_touch(self):
+        self.mod.get_marketing_leads = lambda channel=None, status=None: [
+            {"id": 1, "fields": {"channel": "google", "campaign": "summer", "status": "converted", "inquiry_date": "2026-05-10T09:00:00"}},
+            {"id": 2, "fields": {"channel": "facebook", "campaign": "fall", "status": "converted", "inquiry_date": "2026-05-12T09:00:00"}},
+            {"id": 3, "fields": {"channel": "google", "campaign": "spring", "status": "converted", "inquiry_date": "2026-04-05T09:00:00"}},
+        ]
+        self.mod.get_marketing_touchpoints = lambda lead_id=None, channel=None: [
+            {"id": 10, "fields": {"lead_id": 1, "channel": "google", "occurred_at": "2026-05-01T09:00:00"}},
+            {"id": 11, "fields": {"lead_id": 1, "channel": "facebook", "occurred_at": "2026-05-08T09:00:00"}},
+            {"id": 12, "fields": {"lead_id": 2, "channel": "facebook", "occurred_at": "2026-05-02T09:00:00"}},
+            {"id": 13, "fields": {"lead_id": 3, "channel": "google", "occurred_at": "2026-04-02T09:00:00"}},
+        ]
+        def _spend_rows(channel=None, campaign=None, period_month=None):
+            rows = [
+                {"id": 20, "fields": {"channel": "google", "period_month": "2026-05", "spend_amount": 300}},
+                {"id": 21, "fields": {"channel": "facebook", "period_month": "2026-05", "spend_amount": 200}},
+                {"id": 22, "fields": {"channel": "google", "period_month": "2026-04", "spend_amount": 150}},
+            ]
+            if period_month:
+                rows = [r for r in rows if r["fields"].get("period_month") == period_month]
+            return rows
+        self.mod.get_marketing_channel_spend = _spend_rows
+
+        resp = self.client.get(
+            "/marketing/attribution/multi-touch?period_month=2026-05&model=position_based",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("model"), "position_based")
+        items = {row["channel"]: row for row in payload.get("items", [])}
+        self.assertAlmostEqual(items["google"]["weighted_conversions"], 0.5, places=4)
+        self.assertAlmostEqual(items["facebook"]["weighted_conversions"], 1.5, places=4)
+        self.assertAlmostEqual(items["facebook"]["weighted_cpa"], 133.33, places=2)
+        self.assertAlmostEqual(payload.get("totals", {}).get("weighted_cpa"), 250.0, places=2)
+        self.assertAlmostEqual(payload.get("totals", {}).get("weighted_cpa_change_vs_prior_month"), 100.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

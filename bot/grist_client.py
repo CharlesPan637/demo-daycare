@@ -35,7 +35,8 @@ TABLE_MAP = {"children": "Table2", "staff": "Table3", "attendance": "Table4",
               "review_requests": "Review_Requests",
               "insurance_policies": "Insurance_Policies",
               "competitor_snapshots": "Competitor_Snapshots",
-              "marketing_channel_spend": "Marketing_Channel_Spend"}
+              "marketing_channel_spend": "Marketing_Channel_Spend",
+              "marketing_touchpoints": "Marketing_Touchpoints"}
 
 
 def _as_grist_id(value: int | str | None) -> int | str | None:
@@ -1195,4 +1196,29 @@ def get_marketing_channel_spend(channel: str | None = None,
     if period_month:
         month_lc = str(period_month).strip().lower()
         result = [r for r in result if str(r.get("fields", {}).get("period_month", "")).strip().lower() == month_lc]
+    return result
+
+
+def create_marketing_touchpoint(fields: dict) -> dict | None:
+    """Create a marketing touchpoint row for attribution modeling."""
+    result = _api("POST", f"/tables/{TABLE_MAP['marketing_touchpoints']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_marketing_touchpoints(lead_id: int | str | None = None,
+                              channel: str | None = None) -> list:
+    """Return marketing touchpoint rows, optionally filtered by lead and channel."""
+    records = _api("GET", f"/tables/{TABLE_MAP['marketing_touchpoints']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if lead_id is not None:
+        result = [r for r in result if str(r.get("fields", {}).get("lead_id", "")).strip() == str(lead_id).strip()]
+    if channel:
+        channel_lc = str(channel).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("channel", "")).strip().lower() == channel_lc]
     return result

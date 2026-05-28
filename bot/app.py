@@ -374,6 +374,8 @@ try:
         get_competitor_snapshots,
         create_marketing_channel_spend,
         get_marketing_channel_spend,
+        create_marketing_touchpoint,
+        get_marketing_touchpoints,
     )
     from regulatory_rag import get_regulatory_answer  # noqa: E402
 
@@ -475,6 +477,8 @@ except Exception as e:
     get_competitor_snapshots = lambda _n=None: []  # type: ignore[assignment]
     create_marketing_channel_spend = lambda _f: None  # type: ignore[assignment]
     get_marketing_channel_spend = lambda _c=None, _ca=None, _pm=None: []  # type: ignore[assignment]
+    create_marketing_touchpoint = lambda _f: None  # type: ignore[assignment]
+    get_marketing_touchpoints = lambda _l=None, _c=None: []  # type: ignore[assignment]
     get_regulatory_answer = lambda _q, dynamic_rules=None: None  # type: ignore[assignment]
 
 # --- AI client ---
@@ -1293,6 +1297,21 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "notes": {"type": "string"},
         },
     },
+    ("POST", "/marketing/attribution/touchpoints"): {
+        "type": "object",
+        "required": ["lead_id", "channel", "occurred_at"],
+        "properties": {
+            "lead_id": {"type": "integer"},
+            "channel": {"type": "string"},
+            "campaign": {"type": "string"},
+            "touch_type": {"type": "string"},
+            "occurred_at": {"type": "string", "format": "date-time"},
+            "utm_source": {"type": "string"},
+            "utm_medium": {"type": "string"},
+            "utm_campaign": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+    },
 }
 
 QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
@@ -1367,6 +1386,10 @@ QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
     ("GET", "/marketing/attribution/spend-trend"): [
         {"name": "channel", "schema": {"type": "string"}},
         {"name": "campaign", "schema": {"type": "string"}},
+    ],
+    ("GET", "/marketing/attribution/multi-touch"): [
+        {"name": "period_month", "schema": {"type": "string"}},
+        {"name": "model", "schema": {"type": "string", "enum": ["first_touch", "last_touch", "position_based"]}},
     ],
 }
 
@@ -4169,6 +4192,181 @@ def api_marketing_attribution_spend_trend():
             prev_cpa = cpa
 
     return jsonify({"count": len(trend), "items": trend})
+
+
+@app.route("/marketing/attribution/touchpoints", methods=["POST"])
+def api_marketing_attribution_touchpoints_create():
+    """Create attribution touchpoint events tied to a marketing lead."""
+    data = request.get_json(force=True, silent=True) or {}
+    lead_id = data.get("lead_id")
+    channel = str(data.get("channel", "")).strip().lower()
+    occurred_at = str(data.get("occurred_at", "")).strip()
+    if lead_id in (None, ""):
+        return jsonify({"error": "lead_id is required"}), 400
+    if not channel:
+        return jsonify({"error": "channel is required"}), 400
+    if not occurred_at:
+        return jsonify({"error": "occurred_at is required"}), 400
+    if _parse_iso_datetime(occurred_at) is None:
+        return jsonify({"error": "occurred_at must be ISO datetime"}), 400
+
+    payload = {
+        "lead_id": _to_grist_id(lead_id),
+        "channel": channel,
+        "campaign": str(data.get("campaign", "")).strip().lower(),
+        "touch_type": str(data.get("touch_type", "unknown")).strip().lower(),
+        "occurred_at": occurred_at,
+        "utm_source": str(data.get("utm_source", "")).strip().lower(),
+        "utm_medium": str(data.get("utm_medium", "")).strip().lower(),
+        "utm_campaign": str(data.get("utm_campaign", "")).strip().lower(),
+        "notes": str(data.get("notes", "")).strip(),
+    }
+    result = create_marketing_touchpoint(payload)
+    if not result:
+        return jsonify({"error": "failed to create marketing touchpoint"}), 500
+    return jsonify({"status": "created", "touchpoint_id": result.get("id")}), 201
+
+
+@app.route("/marketing/attribution/multi-touch", methods=["GET"])
+def api_marketing_attribution_multi_touch():
+    """Return weighted attribution by channel using first/last/position-based models."""
+    period_month = str(request.args.get("period_month", "")).strip()
+    model = str(request.args.get("model", "position_based")).strip().lower()
+    if period_month and not re.match(r"^\d{4}-\d{2}$", period_month):
+        return jsonify({"error": "period_month must be YYYY-MM"}), 400
+    if model not in {"first_touch", "last_touch", "position_based"}:
+        return jsonify({"error": "model must be one of first_touch,last_touch,position_based"}), 400
+
+    leads = get_marketing_leads()
+    touchpoints = get_marketing_touchpoints()
+    spend_rows = get_marketing_channel_spend(period_month=period_month or None)
+
+    spend_by_channel: dict[str, float] = {}
+    for row in spend_rows:
+        fields = row.get("fields", {})
+        channel = str(fields.get("channel", "unknown")).strip().lower() or "unknown"
+        spend_by_channel[channel] = spend_by_channel.get(channel, 0.0) + _to_float(fields.get("spend_amount"))
+
+    lead_by_id = {str(row.get("id")): row for row in leads}
+    converted_leads: list[str] = []
+    for row in leads:
+        fields = row.get("fields", {})
+        if str(fields.get("status", "")).strip().lower() != "converted":
+            continue
+        inquiry = str(fields.get("inquiry_date", "")).strip()
+        month = inquiry[:7] if len(inquiry) >= 7 and inquiry[4] == "-" else ""
+        if period_month and month != period_month:
+            continue
+        converted_leads.append(str(row.get("id")))
+
+    tps_by_lead: dict[str, list[dict[str, Any]]] = {}
+    for tp in touchpoints:
+        fields = tp.get("fields", {})
+        lid = str(fields.get("lead_id", "")).strip()
+        if not lid:
+            continue
+        tps_by_lead.setdefault(lid, []).append(tp)
+
+    channel_weights: dict[str, float] = {}
+    total_attributed_conversions = 0.0
+
+    for lid in converted_leads:
+        lead = lead_by_id.get(lid, {})
+        lead_fields = lead.get("fields", {})
+        fallback_channel = str(lead_fields.get("channel", "unknown")).strip().lower() or "unknown"
+        lead_tps = sorted(
+            tps_by_lead.get(lid, []),
+            key=lambda x: str(x.get("fields", {}).get("occurred_at", "")),
+        )
+        if not lead_tps:
+            channel_weights[fallback_channel] = channel_weights.get(fallback_channel, 0.0) + 1.0
+            total_attributed_conversions += 1.0
+            continue
+
+        channels = [str(tp.get("fields", {}).get("channel", fallback_channel)).strip().lower() or fallback_channel for tp in lead_tps]
+        if model == "first_touch":
+            alloc = {channels[0]: 1.0}
+        elif model == "last_touch":
+            alloc = {channels[-1]: 1.0}
+        else:
+            alloc: dict[str, float] = {}
+            if len(channels) == 1:
+                alloc[channels[0]] = 1.0
+            elif len(channels) == 2:
+                alloc[channels[0]] = 0.5
+                alloc[channels[1]] = alloc.get(channels[1], 0.0) + 0.5
+            else:
+                first = channels[0]
+                last = channels[-1]
+                alloc[first] = 0.4
+                alloc[last] = alloc.get(last, 0.0) + 0.4
+                middle = channels[1:-1]
+                share = 0.2 / len(middle)
+                for ch in middle:
+                    alloc[ch] = alloc.get(ch, 0.0) + share
+
+        for ch, weight in alloc.items():
+            channel_weights[ch] = channel_weights.get(ch, 0.0) + weight
+            total_attributed_conversions += weight
+
+    results = []
+    for ch, conversions in channel_weights.items():
+        spend = round(spend_by_channel.get(ch, 0.0), 2)
+        weighted_cpa = round(spend / conversions, 2) if conversions > 0 else None
+        results.append({
+            "channel": ch,
+            "weighted_conversions": round(conversions, 4),
+            "spend_amount": spend,
+            "weighted_cpa": weighted_cpa,
+        })
+    results = sorted(results, key=lambda x: x["weighted_conversions"], reverse=True)
+
+    prior_month = ""
+    if period_month and re.match(r"^\d{4}-\d{2}$", period_month):
+        y, m = period_month.split("-")
+        yi = int(y)
+        mi = int(m) - 1
+        if mi == 0:
+            yi -= 1
+            mi = 12
+        prior_month = f"{yi:04d}-{mi:02d}"
+
+    prior_weighted_cpa = None
+    current_weighted_cpa = None
+    if period_month:
+        current_spend_total = sum(_to_float(r.get("fields", {}).get("spend_amount")) for r in spend_rows)
+        current_converted = len(converted_leads)
+        current_weighted_cpa = round(current_spend_total / current_converted, 2) if current_converted > 0 else None
+    if prior_month:
+        prior_spend = get_marketing_channel_spend(period_month=prior_month)
+        prior_spend_total = sum(_to_float(r.get("fields", {}).get("spend_amount")) for r in prior_spend)
+        prior_converted = 0
+        for row in leads:
+            f = row.get("fields", {})
+            if str(f.get("status", "")).strip().lower() != "converted":
+                continue
+            inquiry = str(f.get("inquiry_date", "")).strip()
+            if len(inquiry) >= 7 and inquiry[:7] == prior_month:
+                prior_converted += 1
+        prior_weighted_cpa = round(prior_spend_total / prior_converted, 2) if prior_converted > 0 else None
+
+    cpa_delta = None
+    if current_weighted_cpa is not None and prior_weighted_cpa is not None:
+        cpa_delta = round(float(current_weighted_cpa) - float(prior_weighted_cpa), 2)
+
+    return jsonify({
+        "period_month": period_month or None,
+        "model": model,
+        "count": len(results),
+        "items": results,
+        "totals": {
+            "weighted_conversions": round(total_attributed_conversions, 4),
+            "weighted_cpa": current_weighted_cpa,
+            "prior_month": prior_month or None,
+            "prior_weighted_cpa": prior_weighted_cpa,
+            "weighted_cpa_change_vs_prior_month": cpa_delta,
+        },
+    })
 
 
 @app.route("/marketing/dashboard", methods=["GET"])

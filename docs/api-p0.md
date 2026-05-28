@@ -470,3 +470,52 @@ Response `200`:
   ]
 }
 ```
+
+### Attribution touchpoint ingestion
+`POST /marketing/attribution/touchpoints`
+
+Request:
+```json
+{
+  "lead_id": 1,
+  "channel": "google",
+  "campaign": "summer-2026",
+  "touch_type": "ad_click",
+  "occurred_at": "2026-05-01T09:00:00",
+  "utm_source": "google",
+  "utm_medium": "cpc",
+  "utm_campaign": "summer-2026"
+}
+```
+
+Response `201`:
+```json
+{ "status": "created", "touchpoint_id": 1 }
+```
+
+### Multi-touch weighted attribution
+`GET /marketing/attribution/multi-touch?period_month=2026-05&model=position_based`
+
+Response `200`:
+```json
+{
+  "period_month": "2026-05",
+  "model": "position_based",
+  "count": 1,
+  "items": [
+    {
+      "channel": "facebook",
+      "weighted_conversions": 1.0,
+      "spend_amount": 180.0,
+      "weighted_cpa": 180.0
+    }
+  ],
+  "totals": {
+    "weighted_conversions": 1.0,
+    "weighted_cpa": 560.0,
+    "prior_month": "2026-04",
+    "prior_weighted_cpa": 420.0,
+    "weighted_cpa_change_vs_prior_month": 140.0
+  }
+}
+```
