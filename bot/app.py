@@ -1364,6 +1364,10 @@ QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
         {"name": "channel", "schema": {"type": "string"}},
         {"name": "campaign", "schema": {"type": "string"}},
     ],
+    ("GET", "/marketing/attribution/spend-trend"): [
+        {"name": "channel", "schema": {"type": "string"}},
+        {"name": "campaign", "schema": {"type": "string"}},
+    ],
 }
 
 IDEMPOTENT_ENDPOINTS: set[tuple[str, str]] = {
@@ -4106,6 +4110,65 @@ def api_marketing_attribution_spend_summary():
             "blended_cpa": round(total_spend / total_converted, 2) if total_converted > 0 else None,
         },
     })
+
+
+@app.route("/marketing/attribution/spend-trend", methods=["GET"])
+def api_marketing_attribution_spend_trend():
+    """Return monthly blended CPL/CPA trend with month-over-month deltas."""
+    channel_filter = request.args.get("channel")
+    campaign_filter = request.args.get("campaign")
+    spend_rows = get_marketing_channel_spend(channel=channel_filter, campaign=campaign_filter, period_month=None)
+    leads = get_marketing_leads(channel=channel_filter, status=None)
+
+    leads_monthly: dict[str, dict[str, int]] = {}
+    for row in leads:
+        fields = row.get("fields", {})
+        inquiry = str(fields.get("inquiry_date", "")).strip()
+        month = inquiry[:7] if len(inquiry) >= 7 and inquiry[4] == "-" else ""
+        if not month:
+            continue
+        campaign = str(fields.get("campaign", "")).strip().lower()
+        if campaign_filter and campaign != str(campaign_filter).strip().lower():
+            continue
+        bucket = leads_monthly.setdefault(month, {"lead_count": 0, "converted_count": 0})
+        bucket["lead_count"] += 1
+        if str(fields.get("status", "")).strip().lower() == "converted":
+            bucket["converted_count"] += 1
+
+    spend_monthly: dict[str, float] = {}
+    for row in spend_rows:
+        fields = row.get("fields", {})
+        month = str(fields.get("period_month", "")).strip()
+        if not re.match(r"^\d{4}-\d{2}$", month):
+            continue
+        spend_monthly[month] = spend_monthly.get(month, 0.0) + _to_float(fields.get("spend_amount"))
+
+    months = sorted(set(spend_monthly.keys()) | set(leads_monthly.keys()))
+    trend: list[dict[str, Any]] = []
+    prev_cpl: float | None = None
+    prev_cpa: float | None = None
+    for month in months:
+        spend_amount = round(spend_monthly.get(month, 0.0), 2)
+        lead_count = int(leads_monthly.get(month, {}).get("lead_count", 0))
+        converted_count = int(leads_monthly.get(month, {}).get("converted_count", 0))
+        cpl = round(spend_amount / lead_count, 2) if lead_count > 0 else None
+        cpa = round(spend_amount / converted_count, 2) if converted_count > 0 else None
+        trend.append({
+            "period_month": month,
+            "spend_amount": spend_amount,
+            "lead_count": lead_count,
+            "converted_count": converted_count,
+            "blended_cpl": cpl,
+            "blended_cpa": cpa,
+            "mom_cpl_change": (round(cpl - prev_cpl, 2) if cpl is not None and prev_cpl is not None else None),
+            "mom_cpa_change": (round(cpa - prev_cpa, 2) if cpa is not None and prev_cpa is not None else None),
+        })
+        if cpl is not None:
+            prev_cpl = cpl
+        if cpa is not None:
+            prev_cpa = cpa
+
+    return jsonify({"count": len(trend), "items": trend})
 
 
 @app.route("/marketing/dashboard", methods=["GET"])

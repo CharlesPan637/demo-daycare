@@ -288,6 +288,27 @@ class P0RegressionTest(unittest.TestCase):
         self.assertAlmostEqual(items["facebook:fall"]["cpl"], 120.0, places=2)
         self.assertAlmostEqual(items["facebook:fall"]["cpa"], 120.0, places=2)
 
+    def test_marketing_spend_trend(self):
+        self.mod.get_marketing_leads = lambda channel=None, status=None: [
+            {"id": 1, "fields": {"channel": "google", "campaign": "summer", "status": "converted", "inquiry_date": "2026-03-10T09:00:00"}},
+            {"id": 2, "fields": {"channel": "google", "campaign": "summer", "status": "lost", "inquiry_date": "2026-03-11T09:00:00"}},
+            {"id": 3, "fields": {"channel": "google", "campaign": "summer", "status": "converted", "inquiry_date": "2026-04-15T09:00:00"}},
+        ]
+        self.mod.get_marketing_channel_spend = lambda channel=None, campaign=None, period_month=None: [
+            {"id": 10, "fields": {"channel": "google", "campaign": "summer", "period_month": "2026-03", "spend_amount": 200}},
+            {"id": 11, "fields": {"channel": "google", "campaign": "summer", "period_month": "2026-04", "spend_amount": 300}},
+        ]
+
+        resp = self.client.get("/marketing/attribution/spend-trend", headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("count"), 2)
+        items = payload.get("items", [])
+        self.assertEqual(items[0]["period_month"], "2026-03")
+        self.assertAlmostEqual(items[0]["blended_cpl"], 100.0, places=2)
+        self.assertAlmostEqual(items[1]["blended_cpl"], 300.0, places=2)
+        self.assertAlmostEqual(items[1]["mom_cpl_change"], 200.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

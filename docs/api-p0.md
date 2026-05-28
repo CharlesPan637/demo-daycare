@@ -438,3 +438,35 @@ Response `200`:
   }
 }
 ```
+
+### Spend trend (MoM CPL/CPA)
+`GET /marketing/attribution/spend-trend`
+
+Response `200`:
+```json
+{
+  "count": 3,
+  "items": [
+    {
+      "period_month": "2026-04",
+      "spend_amount": 420.0,
+      "lead_count": 2,
+      "converted_count": 1,
+      "blended_cpl": 210.0,
+      "blended_cpa": 420.0,
+      "mom_cpl_change": null,
+      "mom_cpa_change": null
+    },
+    {
+      "period_month": "2026-05",
+      "spend_amount": 560.0,
+      "lead_count": 2,
+      "converted_count": 1,
+      "blended_cpl": 280.0,
+      "blended_cpa": 560.0,
+      "mom_cpl_change": 70.0,
+      "mom_cpa_change": 140.0
+    }
+  ]
+}
+```
