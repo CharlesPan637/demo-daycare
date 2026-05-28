@@ -947,6 +947,18 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "pickup_password": {"type": "string"},
         },
     },
+    ("POST", "/pickup/authorization/check"): {
+        "type": "object",
+        "required": ["child_id", "guardian_id", "document_type", "document_id_last4", "presented_name"],
+        "properties": {
+            "child_id": {"type": "ref"},
+            "guardian_id": {"type": "ref"},
+            "document_type": {"type": "string", "enum": ["driver_license", "state_id", "passport", "other"]},
+            "document_id_last4": {"type": "string"},
+            "presented_name": {"type": "string"},
+            "override_approved_by": {"type": "ref"},
+        },
+    },
     ("POST", "/pickup/events"): {
         "type": "object",
         "required": ["child_id", "approved"],
@@ -2509,6 +2521,59 @@ def api_pickup_verify():
         return jsonify({"allowed": False, "reason": "pickup_password_mismatch"})
 
     return jsonify({"allowed": True, "reason": "ok", "link_id": link.get("id")})
+
+
+@app.route("/pickup/authorization/check", methods=["POST"])
+def api_pickup_authorization_check():
+    """Run identity and document checks before pickup release."""
+    data = request.get_json(force=True, silent=True) or {}
+    child_id_val = data.get("child_id")
+    guardian_id_val = data.get("guardian_id")
+    document_type = str(data.get("document_type", "")).strip().lower()
+    document_id_last4 = re.sub(r"[^0-9A-Za-z]", "", str(data.get("document_id_last4", "")).strip())[-4:]
+    presented_name = str(data.get("presented_name", "")).strip().lower()
+    override_approved_by = data.get("override_approved_by")
+
+    if not child_id_val or not guardian_id_val:
+        return jsonify({"allowed": False, "reason": "child_id_and_guardian_id_required"}), 400
+    if document_type not in {"driver_license", "state_id", "passport", "other"}:
+        return jsonify({"allowed": False, "reason": "document_type_invalid"}), 400
+    if len(document_id_last4) != 4:
+        return jsonify({"allowed": False, "reason": "document_id_last4_invalid"}), 400
+    if not presented_name:
+        return jsonify({"allowed": False, "reason": "presented_name_required"}), 400
+
+    links = get_child_guardian_links(child_id_val)
+    link = next((r for r in links if str(r["fields"].get("guardian")) == str(guardian_id_val)), None)
+    if not link:
+        return jsonify({"allowed": False, "reason": "guardian_not_linked"})
+    if not _to_bool(link["fields"].get("pickup_allowed", True)):
+        return jsonify({"allowed": False, "reason": "pickup_not_allowed"})
+
+    legal_status = str(link["fields"].get("legal_status", "custodial")).lower()
+    if legal_status in {"restricted", "no_contact"}:
+        return jsonify({"allowed": False, "reason": "legal_restriction"})
+
+    guardian = get_guardian_by_id(guardian_id_val)
+    if not guardian:
+        return jsonify({"allowed": False, "reason": "guardian_not_found"}), 404
+    g_fields = guardian.get("fields", {})
+    expected_name = f"{str(g_fields.get('first_name', '')).strip()} {str(g_fields.get('last_name', '')).strip()}".strip().lower()
+    if expected_name and presented_name != expected_name:
+        return jsonify({"allowed": False, "reason": "presented_name_mismatch"})
+
+    if str(link["fields"].get("court_order_url", "")).strip() and override_approved_by in (None, ""):
+        return jsonify({"allowed": False, "reason": "court_order_manual_override_required"})
+
+    return jsonify({
+        "allowed": True,
+        "reason": "authorized",
+        "link_id": link.get("id"),
+        "legal_status": legal_status,
+        "document_type": document_type,
+        "document_id_last4": document_id_last4,
+        "override_approved_by": _to_grist_id(override_approved_by) if override_approved_by not in (None, "") else None,
+    })
 
 
 @app.route("/pickup/events", methods=["POST"])

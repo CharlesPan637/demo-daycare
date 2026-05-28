@@ -14,8 +14,8 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 ## Updated Closure Matrix
 
 ## 1) Staffing visibility & callout response — **PARTIAL (improved)**
-- Coverage/ratio + substitute finder exist, and predictive coverage/overtime risk is now exposed via protected API (`GET /staffing/risk-summary`).
-- Remaining gap: schedule optimization and automated substitute assignment are not yet implemented.
+- Coverage/ratio + substitute finder exist, and predictive coverage/overtime risk is now exposed via protected API (`GET /staffing/risk-summary`) with substitute recommendations and schedule optimization actions.
+- Remaining gap: deeper forward-looking scheduling optimization is still limited.
 - Evidence: `bot/app.py:2684`, `bot/app.py:3630`, `tests/test_p0_regression.py:372`, `n8n-workflows/staffing-coverage-check.json:56`
 
 ## 2) Parent updates (reports/photos/milestones) — **PARTIAL**
@@ -23,9 +23,10 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 - Remaining gap: parent-facing UX depth and richer controls are still limited.
 - Evidence: `bot/app.py:2490`, `bot/app.py:2998`, `bot/app.py:2295`
 
-## 3) Custody/unauthorized pickup safety — **PARTIAL**
-- Guardian linking + pickup verification/audit implemented, but no full identity/document authorization journey.
-- Evidence: `bot/app.py:1026`, `bot/app.py:1113`, `bot/app.py:1193`
+## 3) Custody/unauthorized pickup safety — **PARTIAL (improved)**
+- Guardian linking + pickup verification/audit plus identity/document authorization pre-check are implemented (`POST /pickup/authorization/check`), including name matching, legal restriction enforcement, and court-order override requirements.
+- Remaining gap: document image capture/retention and external ID verification integrations are not yet implemented.
+- Evidence: `bot/app.py:1026`, `bot/app.py:1113`, `bot/app.py:1193`, `bot/app.py:2544`, `tests/test_p0_regression.py:88`
 
 ## 4) Compliance documentation — **ADDRESSED (core)**
 - Medication administration logs, sanitation checks, sleep-safety checks are implemented at API, table, and workflow levels.
@@ -93,7 +94,7 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
 ## Formal Verification Statement (2026-05-28T17:30:23Z)
 - Operational verification pass completed with live environment checks.
 - `scripts/daily_ops_check.sh` => PASS (includes multi-touch QA guards and staffing unresolved-gap guardrail).
-- `tests/test_p0_regression.py` => PASS (12 tests).
+- `tests/test_p0_regression.py` => PASS (13 tests).
 - Workflow evidence:
   - `mktgPulseWkly26A` activeVersion updated with spend + multi-touch blocks.
   - `mktgPulseExec26A` execution success with Telegram delivery and heartbeat updates.

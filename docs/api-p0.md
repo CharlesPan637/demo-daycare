@@ -74,6 +74,39 @@ Response `200`:
 { "allowed": true, "reason": "ok", "link_id": 7 }
 ```
 
+### Check pickup identity/document authorization
+`POST /pickup/authorization/check`
+
+Request:
+```json
+{
+  "child_id": 1,
+  "guardian_id": 12,
+  "document_type": "driver_license",
+  "document_id_last4": "1234",
+  "presented_name": "Jane Doe"
+}
+```
+
+Response `200`:
+```json
+{
+  "allowed": true,
+  "reason": "authorized",
+  "link_id": 7,
+  "legal_status": "custodial",
+  "document_type": "driver_license",
+  "document_id_last4": "1234",
+  "override_approved_by": null
+}
+```
+
+Behavior:
+- Requires linked guardian and `pickup_allowed=true`.
+- Blocks restricted/no-contact legal statuses.
+- Verifies presented full name against guardian profile.
+- If `court_order_url` is set on child-guardian link, requires `override_approved_by`.
+
 ### Log pickup event
 `POST /pickup/events`
 
