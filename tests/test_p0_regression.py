@@ -390,11 +390,15 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(payload.get("risk_buckets", {}).get("medium"), 2)
         self.assertEqual(payload.get("recommended_substitutes_total"), 1)
         self.assertEqual(payload.get("unresolved_predicted_gap_rooms"), 1)
+        self.assertEqual(payload.get("schedule_optimization", {}).get("rebalancing_actions"), 0)
+        self.assertEqual(payload.get("schedule_optimization", {}).get("shift_extension_actions"), 1)
 
         rooms = {row["room_name"]: row for row in payload.get("rooms", [])}
         self.assertEqual(rooms["Infant"]["recommended_substitute_count"], 1)
         self.assertEqual(rooms["Infant"]["remaining_gap_after_recommendations"], 0.0)
+        self.assertEqual(len(rooms["Infant"].get("schedule_actions", [])), 0)
         self.assertEqual(rooms["Toddler"]["recommended_substitute_count"], 0)
+        self.assertEqual(rooms["Toddler"]["schedule_actions"][0]["action"], "extend_shift")
 
         bad = self.client.get("/staffing/risk-summary?callout_rate=1.5", headers=self._auth_headers())
         self.assertEqual(bad.status_code, 400)

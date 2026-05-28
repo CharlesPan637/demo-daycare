@@ -3711,7 +3711,45 @@ def api_staffing_risk_summary():
             "remaining_gap_after_recommendations": round(resolved_gap, 2),
             "overtime_risk_score": round(overtime_risk_score, 3),
             "risk_level": risk_level,
+            "schedule_actions": [],
         })
+
+    # Build simple schedule optimization actions using room surplus before callouts.
+    donor_pool: dict[str, float] = {}
+    for row in room_results:
+        surplus = max(0.0, _to_float(row.get("scheduled_staff")) - _to_float(row.get("required_staff")))
+        donor_pool[str(row.get("room_name"))] = float(math.floor(surplus))
+
+    rebalancing_actions = 0
+    shift_extension_actions = 0
+    for row in room_results:
+        remaining_gap = _to_float(row.get("remaining_gap_after_recommendations"))
+        if remaining_gap <= 0:
+            continue
+        room_name = str(row.get("room_name"))
+        needed = int(math.ceil(remaining_gap))
+        while needed > 0:
+            donor_name = next((name for name, units in donor_pool.items() if name != room_name and units >= 1), "")
+            if not donor_name:
+                break
+            donor_pool[donor_name] -= 1
+            needed -= 1
+            rebalancing_actions += 1
+            row["schedule_actions"].append({
+                "action": "rebalance_staff",
+                "from_room": donor_name,
+                "to_room": room_name,
+                "staff_units": 1,
+                "reason": "predicted coverage shortfall after callouts",
+            })
+        if needed > 0:
+            shift_extension_actions += 1
+            row["schedule_actions"].append({
+                "action": "extend_shift",
+                "room": room_name,
+                "staff_units": needed,
+                "reason": "insufficient substitute and rebalancing coverage",
+            })
 
     total_rooms = len(room_results)
     return jsonify({
@@ -3723,6 +3761,10 @@ def api_staffing_risk_summary():
         "overtime_risk_rooms": overtime_risk_rooms,
         "recommended_substitutes_total": recommended_substitutes_total,
         "unresolved_predicted_gap_rooms": unresolved_predicted_gap_rooms,
+        "schedule_optimization": {
+            "rebalancing_actions": rebalancing_actions,
+            "shift_extension_actions": shift_extension_actions,
+        },
         "risk_buckets": {
             "high": high_risk_count,
             "medium": medium_risk_count,
