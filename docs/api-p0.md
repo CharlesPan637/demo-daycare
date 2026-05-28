@@ -381,6 +381,43 @@ Response `200`:
 { "count": 3, "entries": [] }
 ```
 
+### Run waitlist orchestration
+`POST /waitlist/orchestration/run`
+
+Request:
+```json
+{ "persist": true, "open_only": true }
+```
+
+Response `200`:
+```json
+{
+  "status": "ok",
+  "persist": true,
+  "open_only": true,
+  "count": 3,
+  "updated_count": 3,
+  "results": []
+}
+```
+
+Behavior:
+- Generates stage/risk-based next actions and follow-up SLA.
+- High-risk leads (`retention_risk_score >= 70`) receive recovery + escalation action sequences.
+
+### Waitlist orchestration coverage
+`GET /waitlist/orchestration/coverage`
+
+Response `200`:
+```json
+{
+  "high_risk_total": 1,
+  "high_risk_missing_next_action": 0,
+  "ok": true,
+  "details": []
+}
+```
+
 ---
 
 ## Marketing Analytics

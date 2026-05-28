@@ -1233,6 +1233,13 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "open_only": {"type": "boolean"},
         },
     },
+    ("POST", "/waitlist/orchestration/run"): {
+        "type": "object",
+        "properties": {
+            "persist": {"type": "boolean"},
+            "open_only": {"type": "boolean"},
+        },
+    },
     ("POST", "/regulatory/rules/ingest"): {
         "type": "object",
         "properties": {
@@ -1407,6 +1414,7 @@ QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
         {"name": "strict_parent_scope", "schema": {"type": "boolean"}},
         {"name": "month", "schema": {"type": "string"}},
     ],
+    ("GET", "/waitlist/orchestration/coverage"): [],
     ("GET", "/waitlist"): [
         {"name": "status", "schema": {"type": "string"}},
         {"name": "followup_due", "schema": {"type": "boolean"}},
@@ -3669,6 +3677,129 @@ def api_waitlist_scoring_run():
         "errors": errors,
         "ran_at": now.isoformat(timespec="seconds"),
     }), code
+
+
+@app.route("/waitlist/orchestration/run", methods=["POST"])
+def api_waitlist_orchestration_run():
+    """Generate and optionally persist stage/risk-based next actions for open waitlist entries."""
+    data = request.get_json(force=True, silent=True) or {}
+    persist = _to_bool(data.get("persist", False))
+    open_only = _to_bool(data.get("open_only", True))
+    now = datetime.utcnow()
+    open_stages = {"new", "contacted", "tour_scheduled", "offered"}
+
+    entries = get_waitlist()
+    results = []
+    updated_count = 0
+    errors = []
+
+    for entry in entries:
+        fields = entry.get("fields", {})
+        status = str(fields.get("status", "new")).strip().lower()
+        if open_only and status not in open_stages:
+            continue
+
+        risk_score = _to_float(fields.get("retention_risk_score", 0))
+        action_key = "nurture_low_risk"
+        followup_hours = 72.0
+        sequence = ["email_update"]
+
+        if risk_score >= 70:
+            action_key = "high_risk_recovery"
+            followup_hours = 24.0
+            sequence = ["call_family", "sms_reminder", "manager_escalation"]
+        elif risk_score >= 40:
+            action_key = "medium_risk_nudge"
+            followup_hours = 48.0
+            sequence = ["sms_reminder", "email_update"]
+        elif status == "offered":
+            action_key = "offer_close_sequence"
+            followup_hours = 24.0
+            sequence = ["call_family", "offer_expiry_notice"]
+        elif status == "tour_scheduled":
+            action_key = "tour_confirm_sequence"
+            followup_hours = 24.0
+            sequence = ["tour_reminder", "post_tour_followup"]
+
+        next_follow_up_at = (now + timedelta(hours=followup_hours)).isoformat(timespec="seconds")
+        patch = {
+            "automation_last_action": action_key,
+            "automation_last_action_at": now.isoformat(timespec="seconds"),
+            "automation_escalated": risk_score >= 70,
+            "automation_escalated_at": now.isoformat(timespec="seconds") if risk_score >= 70 else "",
+            "automation_escalation_reason": "retention_risk_high" if risk_score >= 70 else "",
+            "automation_nudge_sent_at": now.isoformat(timespec="seconds"),
+            "follow_up_sla_hours": followup_hours,
+            "next_follow_up_at": next_follow_up_at,
+        }
+
+        if persist:
+            updated = update_waitlist_entry(entry.get("id"), patch)
+            if updated is None:
+                errors.append({"entry_id": entry.get("id"), "error": "failed to persist orchestration fields"})
+            else:
+                updated_count += 1
+
+        results.append({
+            "id": entry.get("id"),
+            "status": status,
+            "retention_risk_score": risk_score,
+            "action_key": action_key,
+            "follow_up_sla_hours": followup_hours,
+            "next_follow_up_at": next_follow_up_at,
+            "sequence_steps": sequence,
+        })
+
+    response_status = "ok" if not errors else ("partial" if results else "error")
+    code = 200 if response_status != "error" else 500
+    return jsonify({
+        "status": response_status,
+        "persist": persist,
+        "open_only": open_only,
+        "count": len(results),
+        "updated_count": updated_count,
+        "errors": errors,
+        "results": results,
+    }), code
+
+
+@app.route("/waitlist/orchestration/coverage", methods=["GET"])
+def api_waitlist_orchestration_coverage():
+    """Return orchestration coverage, emphasizing high-risk leads without next action."""
+    entries = get_waitlist()
+    open_stages = {"new", "contacted", "tour_scheduled", "offered"}
+    high_risk_total = 0
+    high_risk_missing_next_action = 0
+    details = []
+
+    for entry in entries:
+        fields = entry.get("fields", {})
+        status = str(fields.get("status", "new")).strip().lower()
+        if status not in open_stages:
+            continue
+        risk_score = _to_float(fields.get("retention_risk_score", 0))
+        if risk_score < 70:
+            continue
+        high_risk_total += 1
+        next_follow_up = str(fields.get("next_follow_up_at", "")).strip()
+        last_action = str(fields.get("automation_last_action", "")).strip()
+        missing = not next_follow_up or not last_action
+        if missing:
+            high_risk_missing_next_action += 1
+            details.append({
+                "id": entry.get("id"),
+                "status": status,
+                "retention_risk_score": risk_score,
+                "next_follow_up_at": next_follow_up,
+                "automation_last_action": last_action,
+            })
+
+    return jsonify({
+        "high_risk_total": high_risk_total,
+        "high_risk_missing_next_action": high_risk_missing_next_action,
+        "ok": high_risk_missing_next_action == 0,
+        "details": details[:25],
+    })
 
 
 @app.route("/waitlist/pipeline/summary", methods=["GET"])

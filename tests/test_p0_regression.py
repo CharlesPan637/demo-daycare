@@ -309,6 +309,53 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(list_payload.get("count"), 2)
         self.assertEqual(len(list_payload.get("entries", [])), 1)
 
+    def test_waitlist_orchestration_run_and_coverage(self):
+        captured = {}
+
+        def _update_waitlist(entry_id_val, fields):
+            captured[str(entry_id_val)] = fields
+            return {"ok": True}
+
+        entries = [
+            {"id": 11, "fields": {"status": "new", "retention_risk_score": 80, "next_follow_up_at": "", "automation_last_action": ""}},
+            {"id": 12, "fields": {"status": "contacted", "retention_risk_score": 55, "next_follow_up_at": "", "automation_last_action": ""}},
+            {"id": 13, "fields": {"status": "offered", "retention_risk_score": 20, "next_follow_up_at": "2026-05-29T10:00:00", "automation_last_action": "email_update"}},
+        ]
+        self.mod.get_waitlist = lambda status=None: entries
+        self.mod.update_waitlist_entry = _update_waitlist
+
+        run_resp = self.client.post(
+            "/waitlist/orchestration/run",
+            json={"persist": True, "open_only": True},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(run_resp.status_code, 200)
+        run_payload = run_resp.get_json()
+        self.assertEqual(run_payload.get("status"), "ok")
+        self.assertEqual(run_payload.get("count"), 3)
+        self.assertEqual(run_payload.get("updated_count"), 3)
+
+        actions = {row["id"]: row["action_key"] for row in run_payload.get("results", [])}
+        self.assertEqual(actions[11], "high_risk_recovery")
+        self.assertEqual(actions[12], "medium_risk_nudge")
+
+        coverage_before = self.client.get("/waitlist/orchestration/coverage", headers=self._auth_headers())
+        self.assertEqual(coverage_before.status_code, 200)
+        c_payload = coverage_before.get_json()
+        self.assertEqual(c_payload.get("high_risk_total"), 1)
+        self.assertEqual(c_payload.get("high_risk_missing_next_action"), 1)
+
+        entries_after = [
+            {"id": 11, "fields": {"status": "new", "retention_risk_score": 80, "next_follow_up_at": "2026-05-29T10:00:00", "automation_last_action": "high_risk_recovery"}},
+            {"id": 12, "fields": {"status": "contacted", "retention_risk_score": 55, "next_follow_up_at": "2026-05-30T10:00:00", "automation_last_action": "medium_risk_nudge"}},
+        ]
+        self.mod.get_waitlist = lambda status=None: entries_after
+        coverage_after = self.client.get("/waitlist/orchestration/coverage", headers=self._auth_headers())
+        self.assertEqual(coverage_after.status_code, 200)
+        c2_payload = coverage_after.get_json()
+        self.assertEqual(c2_payload.get("high_risk_total"), 1)
+        self.assertEqual(c2_payload.get("high_risk_missing_next_action"), 0)
+
     def test_marketing_attribution_summary(self):
         self.mod.get_marketing_leads = lambda channel=None, status=None: [
             {"id": 1, "fields": {"family_name": "Ng", "channel": "google", "campaign": "summer", "status": "converted"}},
