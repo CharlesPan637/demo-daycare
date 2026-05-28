@@ -47,6 +47,7 @@ class P0RegressionTest(unittest.TestCase):
         self.mod.get_child_guardian_links = lambda child_id_val: [
             {"id": 77, "fields": {"guardian": 12, "legal_status": "custodial", "pickup_allowed": True, "pickup_password": "1234"}}
         ]
+        self.mod.get_guardian_by_id = lambda guardian_id_val: {"id": 12, "fields": {"first_name": "Jamie", "last_name": "Stone"}}
         verify = self.client.post(
             "/pickup/verify",
             json={"child_id": 1, "guardian_id": 12, "pickup_password": "1234"},
@@ -77,6 +78,57 @@ class P0RegressionTest(unittest.TestCase):
         )
         self.assertEqual(override.status_code, 200)
         self.assertEqual(override.get_json().get("status"), "logged")
+
+    def test_pickup_authorization_check(self):
+        self.mod.get_child_guardian_links = lambda child_id_val: [
+            {"id": 77, "fields": {"guardian": 12, "legal_status": "custodial", "pickup_allowed": True, "court_order_url": ""}}
+        ]
+        self.mod.get_guardian_by_id = lambda guardian_id_val: {"id": 12, "fields": {"first_name": "Jamie", "last_name": "Stone"}}
+
+        ok = self.client.post(
+            "/pickup/authorization/check",
+            json={
+                "child_id": 1,
+                "guardian_id": 12,
+                "document_type": "driver_license",
+                "document_id_last4": "A1234",
+                "presented_name": "Jamie Stone",
+            },
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.get_json().get("allowed"), True)
+
+        mismatch = self.client.post(
+            "/pickup/authorization/check",
+            json={
+                "child_id": 1,
+                "guardian_id": 12,
+                "document_type": "driver_license",
+                "document_id_last4": "1234",
+                "presented_name": "Wrong Name",
+            },
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(mismatch.status_code, 200)
+        self.assertEqual(mismatch.get_json().get("reason"), "presented_name_mismatch")
+
+        self.mod.get_child_guardian_links = lambda child_id_val: [
+            {"id": 77, "fields": {"guardian": 12, "legal_status": "custodial", "pickup_allowed": True, "court_order_url": "https://example.com/order.pdf"}}
+        ]
+        needs_override = self.client.post(
+            "/pickup/authorization/check",
+            json={
+                "child_id": 1,
+                "guardian_id": 12,
+                "document_type": "driver_license",
+                "document_id_last4": "1234",
+                "presented_name": "Jamie Stone",
+            },
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(needs_override.status_code, 200)
+        self.assertEqual(needs_override.get_json().get("reason"), "court_order_manual_override_required")
 
     def test_invoice_allocation_and_autopay_attempts(self):
         invoice = {"id": 5, "fields": {"account": 10, "total_due": 100, "status": "issued"}}
