@@ -1,13 +1,24 @@
 [
-  {
-    "id": "mktgPulseExec26A",
-    "name": "Marketing Pulse — Execute Once",
-    "active": false,
-    "nodes": [
-      {
-        "parameters": {
-          "rule": {
-            "interval": [
+    {
+      "id": "mktgPulseExec26A",
+      "name": "Marketing Pulse — Execute Once",
+      "active": false,
+      "nodes": [
+        {
+          "parameters": {},
+          "id": "exec-trigger-1",
+          "name": "Execute Workflow Trigger",
+          "type": "n8n-nodes-base.executeWorkflowTrigger",
+          "typeVersion": 1,
+          "position": [
+            240,
+            120
+          ]
+        },
+        {
+          "parameters": {
+            "rule": {
+              "interval": [
               {
                 "field": "cronExpression",
                 "expression": "30 8 * * 1"
@@ -86,7 +97,7 @@
       {
         "parameters": {
           "method": "POST",
-          "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+          "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
           "sendBody": true,
           "bodyParameters": {
             "parameters": [
