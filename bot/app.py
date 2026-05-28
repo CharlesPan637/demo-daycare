@@ -1,6 +1,7 @@
 """Daycare Telegram Bot — Flask API + Telegram polling bridge."""
 
 import logging
+import math
 import os
 import re
 import threading
@@ -1401,6 +1402,9 @@ QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
         {"name": "model", "schema": {"type": "string", "enum": ["first_touch", "last_touch", "position_based"]}},
     ],
     ("GET", "/marketing/attribution/weights"): [],
+    ("GET", "/staffing/risk-summary"): [
+        {"name": "callout_rate", "schema": {"type": "number", "minimum": 0, "maximum": 1}},
+    ],
 }
 
 IDEMPOTENT_ENDPOINTS: set[tuple[str, str]] = {
@@ -3615,6 +3619,92 @@ def api_forecast_assumptions():
             "avg_revenue_per_child": "AVG_MONTHLY_REVENUE_PER_CHILD",
             "licensed_capacity": "FORECAST_LICENSED_CAPACITY|Room_Ratios.max_children",
         },
+    })
+
+
+@app.route("/staffing/risk-summary", methods=["GET"])
+def api_staffing_risk_summary():
+    """Return room-level coverage gaps, predicted callout impact, and overtime risk."""
+    callout_rate = _to_float(request.args.get("callout_rate", 0.08))
+    if callout_rate < 0 or callout_rate > 1:
+        return jsonify({"error": "callout_rate must be between 0 and 1"}), 400
+
+    rooms = get_room_ratios()
+    if not isinstance(rooms, list):
+        rooms = []
+
+    high_risk_count = 0
+    medium_risk_count = 0
+    coverage_gap_rooms = 0
+    predicted_gap_rooms = 0
+    overtime_risk_rooms = 0
+    room_results: list[dict[str, Any]] = []
+
+    for room in rooms:
+        fields = room.get("fields", {}) if isinstance(room, dict) else {}
+        room_name = str(fields.get("room_name") or "Unknown Room")
+        ratio_raw = str(fields.get("staff_child_ratio") or "0:0")
+        ratio_den = 0.0
+        if ":" in ratio_raw:
+            try:
+                ratio_den = float(ratio_raw.split(":", 1)[1])
+            except (TypeError, ValueError):
+                ratio_den = 0.0
+        if ratio_den <= 0:
+            ratio_den = 1.0
+
+        enrolled = max(0.0, _to_float(fields.get("current_enrolled", 0)))
+        scheduled_staff = max(0.0, _to_float(fields.get("scheduled_staff", 0)))
+        required_staff = max(1.0, math.ceil(enrolled / ratio_den) if enrolled > 0 else 1.0)
+        coverage_gap = max(0.0, required_staff - scheduled_staff)
+        expected_callouts = round(scheduled_staff * callout_rate, 2)
+        predicted_available = max(0.0, scheduled_staff - expected_callouts)
+        predicted_gap = max(0.0, required_staff - predicted_available)
+        overtime_risk_score = min(1.0, predicted_gap / required_staff) if required_staff > 0 else 0.0
+        buffer_ratio = (scheduled_staff - required_staff) / required_staff if required_staff > 0 else 0.0
+
+        risk_level = "low"
+        if predicted_gap >= 1 or coverage_gap >= 1:
+            risk_level = "high"
+            high_risk_count += 1
+        elif overtime_risk_score >= 0.15 or buffer_ratio < 0.10:
+            risk_level = "medium"
+            medium_risk_count += 1
+
+        if coverage_gap > 0:
+            coverage_gap_rooms += 1
+        if predicted_gap > 0:
+            predicted_gap_rooms += 1
+            overtime_risk_rooms += 1
+
+        room_results.append({
+            "room_name": room_name,
+            "staff_child_ratio": ratio_raw,
+            "current_enrolled": enrolled,
+            "scheduled_staff": scheduled_staff,
+            "required_staff": required_staff,
+            "coverage_gap_now": round(coverage_gap, 2),
+            "expected_callouts": expected_callouts,
+            "predicted_available_staff": round(predicted_available, 2),
+            "predicted_gap_after_callouts": round(predicted_gap, 2),
+            "overtime_risk_score": round(overtime_risk_score, 3),
+            "risk_level": risk_level,
+        })
+
+    total_rooms = len(room_results)
+    return jsonify({
+        "as_of": datetime.utcnow().isoformat(timespec="seconds"),
+        "callout_rate_assumption": callout_rate,
+        "total_rooms": total_rooms,
+        "coverage_gap_rooms": coverage_gap_rooms,
+        "predicted_gap_rooms": predicted_gap_rooms,
+        "overtime_risk_rooms": overtime_risk_rooms,
+        "risk_buckets": {
+            "high": high_risk_count,
+            "medium": medium_risk_count,
+            "low": max(0, total_rooms - high_risk_count - medium_risk_count),
+        },
+        "rooms": room_results,
     })
 
 
