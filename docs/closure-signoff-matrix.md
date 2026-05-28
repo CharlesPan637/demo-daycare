@@ -40,8 +40,9 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 
 ## 6) Enrollment CRM & waitlist — **PARTIAL (improved)**
 - Waitlist lifecycle + stage advance + tour scheduling + follow-up SLA automation + daily conversion/risk scoring are in place.
-- Remaining gap: deeper conversion orchestration/retention intelligence.
-- Evidence: `bot/app.py:1881`, `bot/app.py:1956`, `bot/app.py:1999`, `bot/app.py:2030`, `n8n-workflows/waitlist-stage-playbook-daily.json:28`
+- Stage/risk-based multi-step conversion orchestration is now implemented (`POST /waitlist/orchestration/run`) with live coverage visibility (`GET /waitlist/orchestration/coverage`).
+- Remaining gap: deeper long-horizon retention intelligence is still limited.
+- Evidence: `bot/app.py:1881`, `bot/app.py:1956`, `bot/app.py:1999`, `bot/app.py:2030`, `bot/app.py:3679`, `bot/app.py:3763`, `tests/test_p0_regression.py:312`, `n8n-workflows/waitlist-stage-playbook-daily.json:28`
 
 ## 7) Forecasting & intelligence — **PARTIAL (improved)**
 - Adds anomaly signals, churn proxy, capacity utilization, and breakeven estimate using configured/live assumptions.
@@ -127,3 +128,9 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
   - `parent_scope_allow_status=200`
   - `parent_scope_portfolio_status=200`
   - `parent_scope_portfolio_limit=1`
+
+## Verification Addendum (2026-05-28T18:02:51Z)
+- Added waitlist orchestration coverage guardrail checks in daily ops and re-ran live validation.
+- Result: **PASS**
+  - `waitlist_orchestration_coverage_status=200`
+  - `waitlist_high_risk_missing_next_action=0`

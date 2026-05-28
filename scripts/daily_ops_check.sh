@@ -53,6 +53,8 @@ parent_scope_chat_id=$(printf "%s" "$parent_scope_probe" | jq -r '
   | ([ $rows[] | select((.first_name // "") == ($unique_name // "")) | .parent_chat_id // "" ][0]) // ""
 ' 2>/dev/null || echo "")
 parent_scope_child_slug=$(printf "%s" "$parent_scope_child_name" | tr '[:upper:]' '[:lower:]')
+waitlist_orch_code=$(curl -s -o /tmp/daily_waitlist_orch_coverage.out -w '%{http_code}' -H "X-API-Key: $API_KEY" "$BASE_URL/waitlist/orchestration/coverage")
+waitlist_high_risk_missing_next_action=$(jq -r '.high_risk_missing_next_action // -1' /tmp/daily_waitlist_orch_coverage.out 2>/dev/null || echo -1)
 if [[ -n "$parent_scope_child_slug" ]]; then
   parent_scope_deny_code=$(curl -s -o /tmp/daily_parent_scope_deny.out -w '%{http_code}' -H "X-API-Key: $API_KEY" "$BASE_URL/portfolio/$parent_scope_child_slug?strict_parent_scope=true&limit=1")
   parent_scope_allow_code=$(curl -s -o /tmp/daily_parent_scope_allow.out -w '%{http_code}' -H "X-API-Key: $API_KEY" -H "X-Parent-Chat-Id: $parent_scope_chat_id" "$BASE_URL/portfolio/$parent_scope_child_slug?strict_parent_scope=true&limit=1")
@@ -88,6 +90,8 @@ echo "[daily_ops] parent_scope_deny_status=$parent_scope_deny_code"
 echo "[daily_ops] parent_scope_allow_status=$parent_scope_allow_code"
 echo "[daily_ops] parent_scope_portfolio_status=$parent_scope_portfolio_code"
 echo "[daily_ops] parent_scope_portfolio_limit=$parent_scope_portfolio_limit"
+echo "[daily_ops] waitlist_orchestration_coverage_status=$waitlist_orch_code"
+echo "[daily_ops] waitlist_high_risk_missing_next_action=$waitlist_high_risk_missing_next_action"
 
 if [[ "$health_code" != "200" ]]; then
   echo "[daily_ops] FAIL: health expected 200"
@@ -166,6 +170,18 @@ if [[ "$parent_scope_allow_code" != "200" ]]; then
 fi
 if [[ "$parent_scope_portfolio_code" != "200" || "$parent_scope_portfolio_limit" != "1" ]]; then
   echo "[daily_ops] FAIL: strict parent scope portfolio check expected 200 with limit=1"
+  exit 1
+fi
+if [[ "$waitlist_orch_code" != "200" ]]; then
+  echo "[daily_ops] FAIL: waitlist orchestration coverage expected 200"
+  exit 1
+fi
+if [[ "$waitlist_high_risk_missing_next_action" == "-1" ]]; then
+  echo "[daily_ops] FAIL: waitlist orchestration coverage parse failed"
+  exit 1
+fi
+if (( waitlist_high_risk_missing_next_action > 0 )); then
+  echo "[daily_ops] FAIL: high-risk waitlist leads missing next action"
   exit 1
 fi
 
