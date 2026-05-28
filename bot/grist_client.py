@@ -450,7 +450,6 @@ def get_all_parent_chat_ids() -> list[tuple[int, str]]:
 def create_announcement(title: str, message: str, priority: str = "normal",
                         sent_by: int = 1) -> dict | None:
     """Create a new announcement record with today's date."""
-    from datetime import datetime
 
     return _api("POST", f"/tables/{TABLE_MAP['announcements']}/records", {
         "records": [{"fields": {
@@ -705,8 +704,7 @@ def add_pickup_event(child_id_val: int | str, requested_by_guardian: int | str |
                      presented_name: str = "", verified_by_staff: int | str | None = None,
                      verified_at: str | None = None) -> dict | None:
     """Create a pickup verification/audit event."""
-    from datetime import datetime
-    event_time = timestamp or datetime.utcnow().isoformat(timespec="seconds")
+    event_time = timestamp or datetime.now(UTC).replace(tzinfo=None).isoformat(timespec="seconds")
     return _api("POST", f"/tables/{TABLE_MAP['pickup_events']}/records", {
         "records": [{"fields": {
             "child": _as_grist_id(child_id_val),

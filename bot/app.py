@@ -10,7 +10,7 @@ import uuid
 import hashlib
 import json
 from functools import wraps
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Any
 
@@ -52,6 +52,11 @@ except ValueError:
     MAX_CONTENT_LENGTH_BYTES = 1048576
 ENFORCE_JSON_CONTENT_TYPE = os.getenv("ENFORCE_JSON_CONTENT_TYPE", "true").strip().lower() in {"1", "true", "yes"}
 JSON_BODY_METHODS = {"POST", "PUT", "PATCH"}
+
+
+def _utcnow() -> datetime:
+    """Return UTC timestamp as naive datetime for backward-compatible storage."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _default_error_code(status_code: int) -> str:
@@ -134,7 +139,7 @@ def _is_next_api_key_active(now_utc: datetime | None = None) -> bool:
     if not active_until:
         logger.error("API_KEY_NEXT_ACTIVE_UNTIL is invalid: %r", API_KEY_NEXT_ACTIVE_UNTIL)
         return False
-    now_utc = now_utc or datetime.utcnow()
+    now_utc = now_utc or _utcnow()
     if active_until.tzinfo is not None:
         # Compare in the same timezone when the configured timestamp is offset-aware.
         now_utc = now_utc.replace(tzinfo=active_until.tzinfo)
@@ -2071,7 +2076,7 @@ def _filter_records_by_day(records: list[dict], field_name: str, day: str | None
 
 def _waitlist_followup_due_entries(entries: list[dict]) -> list[dict]:
     """Return waitlist entries whose next_follow_up_at is due (UTC now or earlier)."""
-    now = datetime.utcnow()
+    now = _utcnow()
     due = []
     for entry in entries:
         fields = entry.get("fields", {})
@@ -2239,7 +2244,7 @@ def _normalize_regulatory_rule_payload(raw: dict, ingest_batch_id: str) -> tuple
         "source_document": str(raw.get("source_document", "")),
         "effective_date": str(raw.get("effective_date", "")),
         "active": _to_bool(raw.get("active", True)),
-        "ingested_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "ingested_at": _utcnow().isoformat(timespec="seconds"),
         "supersedes_version": str(raw.get("supersedes_version", "")),
         "ingest_batch_id": ingest_batch_id,
     }
@@ -2248,7 +2253,7 @@ def _normalize_regulatory_rule_payload(raw: dict, ingest_batch_id: str) -> tuple
 
 def _compute_regulatory_risk_snapshot(jurisdiction: str | None = None) -> dict:
     """Compute a risk summary from regulatory and compliance operational signals."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     active_rules = get_regulatory_rules(jurisdiction=jurisdiction, active_only=True)
     med_logs_today = get_medication_logs()
     med_logs_today = _filter_records_by_day(med_logs_today, "administered_at", today)
@@ -2275,7 +2280,7 @@ def _compute_regulatory_risk_snapshot(jurisdiction: str | None = None) -> dict:
             stale_rules += 1
             continue
         try:
-            age_days = (datetime.utcnow().date() - datetime.strptime(effective_date, "%Y-%m-%d").date()).days
+            age_days = (_utcnow().date() - datetime.strptime(effective_date, "%Y-%m-%d").date()).days
         except ValueError:
             stale_rules += 1
             continue
@@ -2311,7 +2316,7 @@ def _compute_regulatory_risk_snapshot(jurisdiction: str | None = None) -> dict:
 
     score = max(0.0, min(score, 100.0))
     return {
-        "assessed_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "assessed_at": _utcnow().isoformat(timespec="seconds"),
         "jurisdiction": jurisdiction or "default",
         "risk_score": round(score, 2),
         "risk_level": _risk_level_from_score(score),
@@ -2337,7 +2342,7 @@ def _workflow_heartbeat_payload(data: dict) -> tuple[dict | None, str | None]:
         return None, "workflow_key is required"
     status = str(data.get("status", "success")).strip().lower() or "success"
     ran_at_raw = data.get("ran_at")
-    ran_at = _parse_iso_datetime(str(ran_at_raw)) if ran_at_raw else datetime.utcnow()
+    ran_at = _parse_iso_datetime(str(ran_at_raw)) if ran_at_raw else _utcnow()
     if ran_at is None:
         return None, "ran_at must be ISO datetime"
     error_msg = str(data.get("error", "")).strip()
@@ -2345,7 +2350,7 @@ def _workflow_heartbeat_payload(data: dict) -> tuple[dict | None, str | None]:
         "workflow_name": workflow_name,
         "last_status": status,
         "last_run_at": ran_at.isoformat(timespec="seconds"),
-        "updated_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "updated_at": _utcnow().isoformat(timespec="seconds"),
     }
     if status == "success":
         fields["last_success_at"] = fields["last_run_at"]
@@ -2357,7 +2362,7 @@ def _workflow_heartbeat_payload(data: dict) -> tuple[dict | None, str | None]:
 
 def _compute_workflow_freshness(now: datetime | None = None) -> dict:
     """Compute stale workflow summary from heartbeat rows and freshness thresholds."""
-    now = now or datetime.utcnow()
+    now = now or _utcnow()
     rows = get_workflow_heartbeats()
     by_key = {
         str(row.get("fields", {}).get("workflow_key", "")).strip().lower(): row
@@ -2433,7 +2438,7 @@ def _days_overdue(due_date: str) -> int:
         due = datetime.strptime(due_date, "%Y-%m-%d").date()
     except ValueError:
         return 0
-    today = datetime.utcnow().date()
+    today = _utcnow().date()
     delta = (today - due).days
     return delta if delta > 0 else 0
 
@@ -2964,7 +2969,7 @@ def api_billing_invoice_autopay_run(invoice_id_val):
         str(item) for item in (data.get("simulate_fail_party_ids", []) if isinstance(data.get("simulate_fail_party_ids", []), list) else [])
     }
     dry_run = _to_bool(data.get("dry_run", False))
-    attempted_at = datetime.utcnow().isoformat(timespec="seconds")
+    attempted_at = _utcnow().isoformat(timespec="seconds")
 
     attempts = []
     for allocation in allocations:
@@ -3198,7 +3203,7 @@ def api_subsidy_claim_create():
         "received_amount": received_amount,
         "variance": variance,
         "status": status,
-        "submitted_at": data.get("submitted_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "submitted_at": data.get("submitted_at") or _utcnow().isoformat(timespec="seconds"),
         "paid_at": data.get("paid_at"),
         "notes": str(data.get("notes", "")),
     }
@@ -3262,7 +3267,7 @@ def api_subsidy_reconcile_claim(claim_id_val):
         "received_amount": received_amount,
         "variance": variance,
         "status": status,
-        "paid_at": data.get("paid_at") or (datetime.utcnow().isoformat(timespec="seconds") if received_amount > 0 else claim.get("fields", {}).get("paid_at")),
+        "paid_at": data.get("paid_at") or (_utcnow().isoformat(timespec="seconds") if received_amount > 0 else claim.get("fields", {}).get("paid_at")),
         "notes": str(data.get("notes", claim.get("fields", {}).get("notes", ""))),
     }
     result = update_subsidy_claim(claim_id_val, patch)
@@ -3349,7 +3354,7 @@ def api_compliance_add_medication_log():
         "medication_name": str(data.get("medication_name")),
         "dosage": str(data.get("dosage")),
         "administered": administered,
-        "administered_at": data.get("administered_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "administered_at": data.get("administered_at") or _utcnow().isoformat(timespec="seconds"),
         "administered_by": _to_grist_id(administered_by),
         "reason": str(data.get("reason", "")),
         "notes": str(data.get("notes", "")),
@@ -3387,7 +3392,7 @@ def api_compliance_add_sanitation_check():
         "check_area": str(data.get("check_area")),
         "check_item": str(data.get("check_item")),
         "status": status,
-        "checked_at": data.get("checked_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "checked_at": data.get("checked_at") or _utcnow().isoformat(timespec="seconds"),
         "checked_by": _to_grist_id(data.get("checked_by")),
         "notes": str(data.get("notes", "")),
     }
@@ -3423,7 +3428,7 @@ def api_compliance_add_sleep_safety_check():
     payload = {
         "child": _to_grist_id(data.get("child")),
         "status": status,
-        "check_time": data.get("check_time") or datetime.utcnow().isoformat(timespec="seconds"),
+        "check_time": data.get("check_time") or _utcnow().isoformat(timespec="seconds"),
         "checked_by": _to_grist_id(data.get("checked_by")),
         "notes": str(data.get("notes", "")),
     }
@@ -3490,13 +3495,13 @@ def api_waitlist_add():
     if not desired_start_date:
         return jsonify({"error": "desired_start_date must be ISO date (YYYY-MM-DD)"}), 400
     sla_hours = _to_float(data.get("follow_up_sla_hours", WAITLIST_SLA_HOURS.get(status, 48)))
-    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    now_iso = _utcnow().isoformat(timespec="seconds")
     data["desired_start_date"] = desired_start_date
     data["status"] = status
     data["follow_up_sla_hours"] = sla_hours
     data.setdefault("last_contact_at", now_iso)
     if data.get("next_follow_up_at") in (None, ""):
-        data["next_follow_up_at"] = (datetime.utcnow() + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
+        data["next_follow_up_at"] = (_utcnow() + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
     data.setdefault("conversion_score", _to_float(data.get("priority_score", 0)))
     data.setdefault("retention_risk_score", _to_float(data.get("retention_risk_score", 0)))
     result = add_waitlist_entry(data)
@@ -3538,7 +3543,7 @@ def api_waitlist_automation_action(entry_id_val):
     if not action_key:
         return jsonify({"error": "action_key is required"}), 400
 
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = _utcnow().isoformat(timespec="seconds")
     patch = {
         "automation_last_action": action_key,
         "automation_last_action_at": now,
@@ -3552,7 +3557,7 @@ def api_waitlist_automation_action(entry_id_val):
         sla_hours = _to_float(data.get("follow_up_sla_hours"))
         patch["follow_up_sla_hours"] = sla_hours
         if not data.get("next_follow_up_at"):
-            patch["next_follow_up_at"] = (datetime.utcnow() + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
+            patch["next_follow_up_at"] = (_utcnow() + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
 
     if "next_follow_up_at" in data and data.get("next_follow_up_at"):
         next_follow_up_raw = str(data.get("next_follow_up_at"))
@@ -3586,7 +3591,7 @@ def api_waitlist_advance(entry_id_val):
         else:
             new_status = current
 
-    now = datetime.utcnow()
+    now = _utcnow()
     sla_hours = _to_float(data.get("follow_up_sla_hours", entry.get("fields", {}).get("follow_up_sla_hours", WAITLIST_SLA_HOURS.get(new_status, 48))))
     patch = {
         "status": new_status,
@@ -3626,7 +3631,7 @@ def api_waitlist_schedule_tour(entry_id_val):
         "status": "tour_scheduled",
         "tour_date": str(tour_date),
         "follow_up_sla_hours": sla_hours,
-        "last_contact_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "last_contact_at": _utcnow().isoformat(timespec="seconds"),
         "next_follow_up_at": str(next_follow_up_at),
     }
     result = update_waitlist_entry(entry_id_val, patch)
@@ -3648,7 +3653,7 @@ def api_waitlist_scoring_run():
     data = request.get_json(force=True, silent=True) or {}
     persist = _to_bool(data.get("persist", False))
     open_only = _to_bool(data.get("open_only", False))
-    now = datetime.utcnow()
+    now = _utcnow()
     open_stages = {"new", "contacted", "tour_scheduled", "offered"}
 
     entries = get_waitlist()
@@ -3719,7 +3724,7 @@ def api_waitlist_orchestration_run():
     data = request.get_json(force=True, silent=True) or {}
     persist = _to_bool(data.get("persist", False))
     open_only = _to_bool(data.get("open_only", True))
-    now = datetime.utcnow()
+    now = _utcnow()
     open_stages = {"new", "contacted", "tour_scheduled", "offered"}
 
     entries = get_waitlist()
@@ -3847,7 +3852,7 @@ def api_waitlist_pipeline_summary():
     stale_stage_counts = {"new": 0, "contacted": 0, "tour_scheduled": 0, "offered": 0}
     source_counts: dict[str, int] = {}
     total = len(entries)
-    now = datetime.utcnow()
+    now = _utcnow()
 
     for entry in entries:
         fields = entry.get("fields", {})
@@ -3962,7 +3967,7 @@ def api_staffing_risk_summary():
     overtime_risk_rooms = 0
     recommended_substitutes_total = 0
     unresolved_predicted_gap_rooms = 0
-    day_of_week = datetime.utcnow().strftime("%A")
+    day_of_week = _utcnow().strftime("%A")
     room_results: list[dict[str, Any]] = []
 
     for room in rooms:
@@ -4105,7 +4110,7 @@ def api_staffing_risk_summary():
 
     total_rooms = len(room_results)
     return jsonify({
-        "as_of": datetime.utcnow().isoformat(timespec="seconds"),
+        "as_of": _utcnow().isoformat(timespec="seconds"),
         "callout_rate_assumption": callout_rate,
         "total_rooms": total_rooms,
         "coverage_gap_rooms": coverage_gap_rooms,
@@ -4180,7 +4185,7 @@ def api_regulatory_rules_ingest():
     if not isinstance(rules, list) or not rules:
         return jsonify({"error": "rules array is required"}), 400
 
-    ingest_batch_id = str(data.get("ingest_batch_id") or datetime.utcnow().strftime("batch-%Y%m%d%H%M%S"))
+    ingest_batch_id = str(data.get("ingest_batch_id") or _utcnow().strftime("batch-%Y%m%d%H%M%S"))
     deactivate_previous = _to_bool(data.get("deactivate_previous", True))
     dry_run = _to_bool(data.get("dry_run", False))
 
@@ -4352,7 +4357,7 @@ def api_marketing_leads_create():
         "channel": str(data.get("channel", "")).strip().lower(),
         "campaign": str(data.get("campaign", "")).strip(),
         "status": status,
-        "inquiry_date": data.get("inquiry_date") or datetime.utcnow().isoformat(timespec="seconds"),
+        "inquiry_date": data.get("inquiry_date") or _utcnow().isoformat(timespec="seconds"),
         "notes": str(data.get("notes", "")).strip(),
     }
     result = create_marketing_lead(payload)
@@ -4402,7 +4407,7 @@ def api_marketing_reviews_create():
         "platform": platform,
         "status": status,
         "rating": _to_float(data.get("rating")) if data.get("rating") not in (None, "") else None,
-        "requested_at": data.get("requested_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "requested_at": data.get("requested_at") or _utcnow().isoformat(timespec="seconds"),
         "received_at": data.get("received_at"),
         "review_url": str(data.get("review_url", "")).strip(),
         "notes": str(data.get("notes", "")).strip(),
@@ -4531,7 +4536,7 @@ def api_marketing_competitor_snapshots_create():
         "capacity_estimate": _to_float(data.get("capacity_estimate")),
         "waitlist_estimate": _to_float(data.get("waitlist_estimate")),
         "source_url": str(data.get("source_url", "")).strip(),
-        "captured_at": data.get("captured_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "captured_at": data.get("captured_at") or _utcnow().isoformat(timespec="seconds"),
         "notes": str(data.get("notes", "")).strip(),
     }
     result = create_competitor_snapshot(payload)
@@ -4978,7 +4983,7 @@ def api_marketing_dashboard():
 
     insurance_status_counts: dict[str, int] = {}
     expiring_soon = 0
-    now = datetime.utcnow()
+    now = _utcnow()
     for row in policies:
         fields = row.get("fields", {})
         status = str(fields.get("status", "unknown")).strip().lower()
