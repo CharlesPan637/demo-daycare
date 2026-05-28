@@ -63,7 +63,7 @@ services:
       N8N_HOST: demo-daycare.66.94.122.133.sslip.io
       N8N_PORT: "5678"
       N8N_PROTOCOL: https
-      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
       WEBHOOK_URL: https://demo-daycare.66.94.122.133.sslip.io:8446
       GRIST_API_KEY: ${GRIST_API_KEY}
       GRIST_DOC_ID: ${GRIST_DOC_ID}

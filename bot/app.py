@@ -46,6 +46,12 @@ except ValueError:
     RATE_LIMIT_WINDOW_SECONDS = 60
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_STORE: dict[str, list[float]] = {}
+try:
+    MAX_CONTENT_LENGTH_BYTES = max(1024, int(os.getenv("MAX_CONTENT_LENGTH_BYTES", "1048576")))
+except ValueError:
+    MAX_CONTENT_LENGTH_BYTES = 1048576
+ENFORCE_JSON_CONTENT_TYPE = os.getenv("ENFORCE_JSON_CONTENT_TYPE", "true").strip().lower() in {"1", "true", "yes"}
+JSON_BODY_METHODS = {"POST", "PUT", "PATCH"}
 
 
 def _default_error_code(status_code: int) -> str:
@@ -166,6 +172,34 @@ def _require_api_key():
             }
         }), 401
     return jsonify({"error": "unauthorized"}), 401
+
+
+@app.before_request
+def _enforce_request_limits():
+    """Apply request payload and content-type limits on protected mutation routes."""
+    if request.endpoint in PUBLIC_ROUTES:
+        return None
+    if request.method not in JSON_BODY_METHODS:
+        return None
+
+    content_length = request.content_length
+    if content_length is not None and content_length > MAX_CONTENT_LENGTH_BYTES:
+        return jsonify({
+            "error": {
+                "code": "payload_too_large",
+                "message": "request payload exceeds configured limit",
+                "details": {"max_content_length_bytes": MAX_CONTENT_LENGTH_BYTES},
+            }
+        }), 413
+
+    if ENFORCE_JSON_CONTENT_TYPE and content_length not in (None, 0) and not request.is_json:
+        return jsonify({
+            "error": {
+                "code": "unsupported_media_type",
+                "message": "Content-Type must be application/json for this endpoint",
+            }
+        }), 415
+    return None
 
 
 @app.before_request
