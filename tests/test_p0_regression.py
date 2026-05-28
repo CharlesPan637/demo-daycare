@@ -231,6 +231,36 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(campaigns["summer"]["lead_count"], 2)
         self.assertAlmostEqual(campaigns["summer"]["conversion_rate"], 0.5, places=4)
 
+    def test_marketing_seo_summary(self):
+        self.mod.get_marketing_leads = lambda channel=None, status=None: [
+            {"id": 1, "fields": {"family_name": "Ng", "channel": "google", "campaign": "summer", "status": "converted", "inquiry_date": "2026-04-10T09:00:00"}},
+            {"id": 2, "fields": {"family_name": "Diaz", "channel": "google", "campaign": "summer", "status": "lost", "inquiry_date": "2026-04-11T09:00:00"}},
+            {"id": 3, "fields": {"family_name": "Ali", "channel": "facebook", "campaign": "fall", "status": "converted", "inquiry_date": "2026-05-01T09:00:00"}},
+        ]
+        self.mod.get_review_requests = lambda platform=None, status=None: [
+            {"id": 11, "fields": {"family_name": "Ng", "status": "received", "rating": 5, "received_at": "2026-04-22T12:00:00"}},
+            {"id": 12, "fields": {"family_name": "Ali", "status": "received", "rating": 4, "received_at": "2026-05-15T12:00:00"}},
+            {"id": 13, "fields": {"family_name": "Diaz", "status": "requested", "rating": 0, "requested_at": "2026-05-10T12:00:00"}},
+        ]
+
+        resp = self.client.get("/marketing/seo/summary", headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("lead_count"), 3)
+        self.assertEqual(payload.get("review_count"), 3)
+
+        lead_trend = {row["month"]: row["count"] for row in payload.get("lead_trend_by_month", [])}
+        self.assertEqual(lead_trend.get("2026-04"), 2)
+        self.assertEqual(lead_trend.get("2026-05"), 1)
+
+        review_trend = {row["month"]: row["count"] for row in payload.get("received_review_trend_by_month", [])}
+        self.assertEqual(review_trend.get("2026-04"), 1)
+        self.assertEqual(review_trend.get("2026-05"), 1)
+
+        campaigns = {row["campaign"]: row for row in payload.get("campaign_performance", [])}
+        self.assertAlmostEqual(campaigns["summer"]["conversion_rate"], 0.5, places=4)
+        self.assertAlmostEqual(campaigns["fall"]["conversion_rate"], 1.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -4134,6 +4134,80 @@ def api_marketing_attribution_summary():
     })
 
 
+@app.route("/marketing/seo/summary", methods=["GET"])
+def api_marketing_seo_summary():
+    """Return SEO-style weekly/monthly trend signals from marketing lead + review data."""
+    leads = get_marketing_leads()
+    reviews = get_review_requests()
+
+    monthly_leads: dict[str, int] = {}
+    monthly_reviews_received: dict[str, int] = {}
+    channel_mix: dict[str, int] = {}
+    campaign_performance: dict[str, dict[str, Any]] = {}
+
+    def _month_bucket(raw: Any) -> str:
+        txt = str(raw or "").strip()
+        if len(txt) >= 7 and txt[4] == "-":
+            return txt[:7]
+        parsed = _parse_iso_datetime(txt)
+        if parsed:
+            return parsed.strftime("%Y-%m")
+        return "unknown"
+
+    for row in leads:
+        fields = row.get("fields", {})
+        month = _month_bucket(fields.get("inquiry_date"))
+        monthly_leads[month] = monthly_leads.get(month, 0) + 1
+
+        channel = str(fields.get("channel", "unknown")).strip().lower() or "unknown"
+        campaign = str(fields.get("campaign", "uncategorized")).strip().lower() or "uncategorized"
+        status = str(fields.get("status", "")).strip().lower()
+        channel_mix[channel] = channel_mix.get(channel, 0) + 1
+
+        camp = campaign_performance.setdefault(campaign, {"lead_count": 0, "converted_count": 0})
+        camp["lead_count"] += 1
+        if status == "converted":
+            camp["converted_count"] += 1
+
+    for row in reviews:
+        fields = row.get("fields", {})
+        if str(fields.get("status", "")).strip().lower() != "received":
+            continue
+        month = _month_bucket(fields.get("received_at") or fields.get("requested_at"))
+        monthly_reviews_received[month] = monthly_reviews_received.get(month, 0) + 1
+
+    for campaign, bucket in campaign_performance.items():
+        leads_total = int(bucket.get("lead_count", 0))
+        converted = int(bucket.get("converted_count", 0))
+        bucket["conversion_rate"] = round((converted / leads_total), 4) if leads_total else 0.0
+
+    def _trend_series(data: dict[str, int]) -> list[dict[str, Any]]:
+        keys = sorted([k for k in data.keys() if k != "unknown"])
+        if "unknown" in data:
+            keys.append("unknown")
+        return [{"month": key, "count": data.get(key, 0)} for key in keys]
+
+    channel_mix_ranked = sorted(
+        [{"channel": channel, "lead_count": count} for channel, count in channel_mix.items()],
+        key=lambda item: item["lead_count"],
+        reverse=True,
+    )
+    campaigns_ranked = sorted(
+        [{"campaign": campaign, **values} for campaign, values in campaign_performance.items()],
+        key=lambda item: (item["conversion_rate"], item["lead_count"]),
+        reverse=True,
+    )
+
+    return jsonify({
+        "lead_count": len(leads),
+        "review_count": len(reviews),
+        "lead_trend_by_month": _trend_series(monthly_leads),
+        "received_review_trend_by_month": _trend_series(monthly_reviews_received),
+        "channel_mix": channel_mix_ranked,
+        "campaign_performance": campaigns_ranked,
+    })
+
+
 # --- Telegram bot ---
 TELEGRAM_AVAILABLE = False
 try:

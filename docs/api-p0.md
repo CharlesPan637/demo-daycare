@@ -2,12 +2,15 @@
 
 Authentication:
 - Header required on all non-public routes: `X-API-Key: <API_KEY>`
+- During controlled key rotation, `X-API-Key: <API_KEY_NEXT>` is also accepted until `API_KEY_NEXT_ACTIVE_UNTIL`.
 - Public route: `GET /health`
 
 Base URL (local): `http://127.0.0.1:8097`
 
 ## Required Environment Variables
 - `API_KEY`
+- `API_KEY_NEXT` (optional, for rotation window)
+- `API_KEY_NEXT_ACTIVE_UNTIL` (optional ISO datetime, e.g. `2026-06-01T18:00:00Z`)
 - `GRIST_API_KEY`
 - `GRIST_DOC_ID`
 - `GRIST_BASE_URL`
@@ -324,4 +327,65 @@ Response `200`:
 Response `200`:
 ```json
 { "count": 3, "entries": [] }
+```
+
+---
+
+## Marketing Analytics
+
+### Attribution summary
+`GET /marketing/attribution/summary`
+
+Response `200`:
+```json
+{
+  "lead_count": 3,
+  "review_count": 3,
+  "channels": [
+    {
+      "channel": "google",
+      "lead_count": 2,
+      "converted_count": 1,
+      "conversion_rate": 0.5
+    }
+  ],
+  "campaigns": [
+    {
+      "campaign": "summer",
+      "lead_count": 2,
+      "converted_count": 1,
+      "conversion_rate": 0.5
+    }
+  ]
+}
+```
+
+### SEO summary
+`GET /marketing/seo/summary`
+
+Response `200`:
+```json
+{
+  "lead_count": 3,
+  "review_count": 3,
+  "lead_trend_by_month": [
+    { "month": "2026-04", "count": 2 },
+    { "month": "2026-05", "count": 1 }
+  ],
+  "received_review_trend_by_month": [
+    { "month": "2026-04", "count": 1 },
+    { "month": "2026-05", "count": 1 }
+  ],
+  "channel_mix": [
+    { "channel": "google", "lead_count": 2 }
+  ],
+  "campaign_performance": [
+    {
+      "campaign": "summer",
+      "lead_count": 2,
+      "converted_count": 1,
+      "conversion_rate": 0.5
+    }
+  ]
+}
 ```
