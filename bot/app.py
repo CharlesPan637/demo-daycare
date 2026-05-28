@@ -2,12 +2,19 @@
 
 import logging
 import os
+import re
 import threading
 import time
-from datetime import datetime
+import uuid
+import hashlib
+import json
+from functools import wraps
+from datetime import datetime, timedelta
+from http import HTTPStatus
+from typing import Any
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g, make_response
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -18,8 +25,122 @@ app = Flask(__name__)
 # Shared secret for API authentication (n8n webhooks, external callers).
 # Requests must include header  X-API-Key: <value>
 API_KEY = os.getenv("API_KEY", "")
-PUBLIC_ROUTES = {"health"}  # endpoint names that skip auth
+API_KEY_NEXT = os.getenv("API_KEY_NEXT", "").strip()
+API_KEY_NEXT_ACTIVE_UNTIL = os.getenv("API_KEY_NEXT_ACTIVE_UNTIL", "").strip()
+PUBLIC_ROUTES = {"health", "openapi_spec"}  # endpoint names that skip auth
 INSECURE_DEMO_MODE = os.getenv("INSECURE_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"}
+IDEMPOTENCY_ENABLED = os.getenv("IDEMPOTENCY_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+try:
+    IDEMPOTENCY_TTL_SECONDS = max(60, int(os.getenv("IDEMPOTENCY_TTL_SECONDS", "86400")))
+except ValueError:
+    IDEMPOTENCY_TTL_SECONDS = 86400
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+try:
+    RATE_LIMIT_PER_WINDOW = max(1, int(os.getenv("RATE_LIMIT_PER_WINDOW", "120")))
+except ValueError:
+    RATE_LIMIT_PER_WINDOW = 120
+try:
+    RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
+except ValueError:
+    RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_STORE: dict[str, list[float]] = {}
+
+
+def _default_error_code(status_code: int) -> str:
+    """Map HTTP status to stable error code label."""
+    if status_code == 400:
+        return "bad_request"
+    if status_code == 401:
+        return "unauthorized"
+    if status_code == 403:
+        return "forbidden"
+    if status_code == 404:
+        return "not_found"
+    if status_code == 409:
+        return "conflict"
+    if status_code == 422:
+        return "unprocessable_entity"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code >= 500:
+        return "internal_error"
+    return "request_failed"
+
+
+def _normalize_error_payload(payload, status_code: int, request_id: str) -> dict:
+    """Normalize any error payload into a consistent envelope."""
+    try:
+        default_message = HTTPStatus(status_code).phrase
+    except ValueError:
+        default_message = "Request failed"
+    error_code = _default_error_code(status_code)
+    message = default_message
+    details = None
+
+    if isinstance(payload, dict):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            error_code = str(err.get("code", error_code))
+            message = str(err.get("message") or err.get("detail") or message)
+            if "details" in err:
+                details = err.get("details")
+        elif isinstance(err, str) and err.strip():
+            message = err.strip()
+        elif isinstance(payload.get("message"), str) and payload.get("message", "").strip():
+            message = str(payload.get("message")).strip()
+        if details is None and "details" in payload:
+            details = payload.get("details")
+
+    envelope = {
+        "error": {
+            "code": error_code,
+            "message": message,
+            "request_id": request_id,
+        }
+    }
+    if details is not None:
+        envelope["error"]["details"] = details
+    return envelope
+
+
+def _parse_env_iso_datetime(value: str) -> datetime | None:
+    """Parse env datetime values in ISO format (supports trailing Z)."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _is_next_api_key_active(now_utc: datetime | None = None) -> bool:
+    """Return whether API_KEY_NEXT is currently accepted."""
+    if not API_KEY_NEXT:
+        return False
+    if not API_KEY_NEXT_ACTIVE_UNTIL:
+        return True
+    active_until = _parse_env_iso_datetime(API_KEY_NEXT_ACTIVE_UNTIL)
+    if not active_until:
+        logger.error("API_KEY_NEXT_ACTIVE_UNTIL is invalid: %r", API_KEY_NEXT_ACTIVE_UNTIL)
+        return False
+    now_utc = now_utc or datetime.utcnow()
+    if active_until.tzinfo is not None:
+        # Compare in the same timezone when the configured timestamp is offset-aware.
+        now_utc = now_utc.replace(tzinfo=active_until.tzinfo)
+    return now_utc <= active_until
+
+
+@app.before_request
+def _init_request_context():
+    """Initialize request ID and timing metadata for all requests."""
+    incoming_request_id = request.headers.get("X-Request-Id", "").strip()
+    g.request_id = incoming_request_id or uuid.uuid4().hex
+    g.request_started_at = time.time()
+    return None
 
 
 @app.before_request
@@ -32,9 +153,127 @@ def _require_api_key():
             return None
         return jsonify({"error": "server_misconfigured", "detail": "API_KEY is not configured"}), 503
     token = request.headers.get("X-API-Key", "")
-    if token != API_KEY:
-        return jsonify({"error": "unauthorized"}), 401
+    if token == API_KEY:
+        return None
+    if token == API_KEY_NEXT and _is_next_api_key_active():
+        return None
+    if token == API_KEY_NEXT and API_KEY_NEXT:
+        return jsonify({
+            "error": {
+                "code": "unauthorized",
+                "message": "next API key rotation window expired",
+            }
+        }), 401
+    return jsonify({"error": "unauthorized"}), 401
+
+
+@app.before_request
+def _enforce_rate_limit():
+    """Apply per-API-key throttling for protected routes."""
+    if not RATE_LIMIT_ENABLED:
+        return None
+    if request.endpoint in PUBLIC_ROUTES:
+        return None
+    token = request.headers.get("X-API-Key", "").strip()
+    if not token:
+        return None
+
+    now = time.time()
+    window_start = now - RATE_LIMIT_WINDOW_SECONDS
+    key_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+    with _RATE_LIMIT_LOCK:
+        history = _RATE_LIMIT_STORE.get(key_hash, [])
+        history = [ts for ts in history if ts >= window_start]
+        if len(history) >= RATE_LIMIT_PER_WINDOW:
+            retry_after_seconds = max(1, int(history[0] + RATE_LIMIT_WINDOW_SECONDS - now))
+            _RATE_LIMIT_STORE[key_hash] = history
+            logger.warning(
+                "rate_limit_exceeded key_hash=%s route=%s method=%s limit=%s window_seconds=%s retry_after=%s",
+                key_hash,
+                request.path,
+                request.method,
+                RATE_LIMIT_PER_WINDOW,
+                RATE_LIMIT_WINDOW_SECONDS,
+                retry_after_seconds,
+            )
+            response = jsonify({
+                "error": {
+                    "code": "rate_limited",
+                    "message": "rate limit exceeded",
+                    "details": {
+                        "retry_after_seconds": retry_after_seconds,
+                        "limit": RATE_LIMIT_PER_WINDOW,
+                        "window_seconds": RATE_LIMIT_WINDOW_SECONDS,
+                    },
+                }
+            })
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after_seconds)
+            return response
+        history.append(now)
+        _RATE_LIMIT_STORE[key_hash] = history
     return None
+
+
+@app.before_request
+def _validate_request_payload():
+    """Validate JSON payloads for selected write routes using schema map."""
+    if request.method not in {"POST", "PATCH", "PUT"}:
+        return None
+    if not request.url_rule:
+        return None
+    rule = request.url_rule.rule
+    schema = REQUEST_VALIDATION_SCHEMAS.get((request.method, rule))
+    if not schema:
+        return None
+    data = request.get_json(silent=True)
+    if data is None:
+        return _validation_error_response([{"field": "body", "message": "must be valid JSON object"}])
+    if not isinstance(data, dict):
+        return _validation_error_response([{"field": "body", "message": "must be a JSON object"}])
+    errors = _validate_json_against_schema(data, schema, path="body")
+    errors.extend(_extra_validation_errors(rule, data))
+    if errors:
+        return _validation_error_response(errors)
+    return None
+
+
+@app.after_request
+def _attach_request_metadata(response):
+    """Attach request ID header and normalize all non-2xx errors."""
+    request_id = getattr(g, "request_id", "")
+    response.headers["X-Request-Id"] = request_id
+
+    if response.status_code >= 400:
+        payload = response.get_json(silent=True)
+        normalized = _normalize_error_payload(payload, response.status_code, request_id)
+        normalized_response = jsonify(normalized)
+        normalized_response.status_code = response.status_code
+        normalized_response.headers["X-Request-Id"] = request_id
+        if response.headers.get("Retry-After"):
+            normalized_response.headers["Retry-After"] = response.headers.get("Retry-After")
+        response = normalized_response
+
+    started = getattr(g, "request_started_at", None)
+    duration_ms = int((time.time() - started) * 1000) if isinstance(started, (int, float)) else -1
+    logger.info(
+        "request_id=%s method=%s path=%s status=%s duration_ms=%s",
+        request_id,
+        request.method,
+        request.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
+
+
+@app.route("/openapi.json", methods=["GET"])
+def openapi_spec():
+    """Return OpenAPI specification for the current API surface."""
+    global _OPENAPI_CACHE
+    if _OPENAPI_CACHE is None:
+        _OPENAPI_CACHE = _build_openapi_spec()
+    return jsonify(_OPENAPI_CACHE)
 
 
 # --- Grist integration ---
@@ -109,6 +348,30 @@ try:
         get_waitlist,
         add_waitlist_entry,
         update_waitlist_entry,
+        add_medication_log,
+        get_medication_logs,
+        add_sanitation_check,
+        get_sanitation_checks,
+        add_sleep_safety_check,
+        get_sleep_safety_checks,
+        create_regulatory_rule,
+        update_regulatory_rule,
+        get_regulatory_rules,
+        get_regulatory_rule_versions,
+        find_regulatory_rule_version,
+        create_regulatory_risk_assessment,
+        get_regulatory_risk_assessments,
+        get_workflow_heartbeats,
+        upsert_workflow_heartbeat,
+        create_marketing_lead,
+        get_marketing_leads,
+        create_review_request,
+        get_review_requests,
+        create_insurance_policy,
+        get_insurance_policies,
+        update_insurance_policy,
+        create_competitor_snapshot,
+        get_competitor_snapshots,
     )
     from regulatory_rag import get_regulatory_answer  # noqa: E402
 
@@ -184,7 +447,31 @@ except Exception as e:
     get_waitlist = lambda _s=None: []  # type: ignore[assignment]
     add_waitlist_entry = lambda _f: None  # type: ignore[assignment]
     update_waitlist_entry = lambda _i, _f: None  # type: ignore[assignment]
-    get_regulatory_answer = lambda _q: None  # type: ignore[assignment]
+    add_medication_log = lambda _f: None  # type: ignore[assignment]
+    get_medication_logs = lambda _c=None: []  # type: ignore[assignment]
+    add_sanitation_check = lambda _f: None  # type: ignore[assignment]
+    get_sanitation_checks = lambda _s=None: []  # type: ignore[assignment]
+    add_sleep_safety_check = lambda _f: None  # type: ignore[assignment]
+    get_sleep_safety_checks = lambda _c=None, _s=None: []  # type: ignore[assignment]
+    create_regulatory_rule = lambda _f: None  # type: ignore[assignment]
+    update_regulatory_rule = lambda _i, _f: None  # type: ignore[assignment]
+    get_regulatory_rules = lambda _k=None, _j=None, _c=None, active_only=True: []  # type: ignore[assignment]
+    get_regulatory_rule_versions = lambda _k: []  # type: ignore[assignment]
+    find_regulatory_rule_version = lambda _k, _v: None  # type: ignore[assignment]
+    create_regulatory_risk_assessment = lambda _f: None  # type: ignore[assignment]
+    get_regulatory_risk_assessments = lambda _s=None, _c=None: []  # type: ignore[assignment]
+    get_workflow_heartbeats = lambda _k=None: []  # type: ignore[assignment]
+    upsert_workflow_heartbeat = lambda _k, _f: None  # type: ignore[assignment]
+    create_marketing_lead = lambda _f: None  # type: ignore[assignment]
+    get_marketing_leads = lambda _c=None, _s=None: []  # type: ignore[assignment]
+    create_review_request = lambda _f: None  # type: ignore[assignment]
+    get_review_requests = lambda _p=None, _s=None: []  # type: ignore[assignment]
+    create_insurance_policy = lambda _f: None  # type: ignore[assignment]
+    get_insurance_policies = lambda _s=None: []  # type: ignore[assignment]
+    update_insurance_policy = lambda _i, _f: None  # type: ignore[assignment]
+    create_competitor_snapshot = lambda _f: None  # type: ignore[assignment]
+    get_competitor_snapshots = lambda _n=None: []  # type: ignore[assignment]
+    get_regulatory_answer = lambda _q, dynamic_rules=None: None  # type: ignore[assignment]
 
 # --- AI client ---
 AI_AVAILABLE = False
@@ -602,6 +889,899 @@ def _to_grist_id(value):
     return value
 
 
+REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
+    ("POST", "/children/<child_id_val>/guardians"): {
+        "type": "object",
+        "properties": {
+            "guardian_id": {"type": "ref"},
+            "guardian": {
+                "type": "object",
+                "properties": {
+                    "first_name": {"type": "string"},
+                    "last_name": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "email": {"type": "string"},
+                    "relationship": {"type": "string"},
+                    "status": {"type": "string"},
+                },
+            },
+            "link": {
+                "type": "object",
+                "properties": {
+                    "legal_status": {"type": "string"},
+                    "pickup_allowed": {"type": "boolean"},
+                    "pickup_password": {"type": "string"},
+                    "court_order_url": {"type": "string"},
+                    "notes": {"type": "string"},
+                },
+            },
+        },
+    },
+    ("PATCH", "/children/<child_id_val>/guardians/<guardian_id_val>"): {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+            "legal_status": {"type": "string"},
+            "pickup_allowed": {"type": "boolean"},
+            "pickup_password": {"type": "string"},
+            "court_order_url": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    ("POST", "/pickup/verify"): {
+        "type": "object",
+        "required": ["child_id", "guardian_id"],
+        "properties": {
+            "child_id": {"type": "ref"},
+            "guardian_id": {"type": "ref"},
+            "pickup_password": {"type": "string"},
+        },
+    },
+    ("POST", "/pickup/events"): {
+        "type": "object",
+        "required": ["child_id", "approved"],
+        "properties": {
+            "child_id": {"type": "ref"},
+            "approved": {"type": "boolean"},
+            "requested_by_guardian": {"type": "ref"},
+            "approved_by_staff": {"type": "ref"},
+            "method": {"type": "string"},
+            "denial_reason": {"type": "string"},
+            "timestamp": {"type": "string", "format": "date-time"},
+            "denial_code": {"type": "string"},
+            "override_used": {"type": "boolean"},
+            "override_reason": {"type": "string"},
+            "override_approved_by": {"type": "ref"},
+        },
+    },
+    ("POST", "/billing/invoices/generate"): {
+        "type": "object",
+        "required": ["invoices"],
+        "properties": {
+            "invoices": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "required": ["account", "period_start", "period_end", "due_date", "total_due"],
+                    "properties": {
+                        "account": {"type": "ref"},
+                        "period_start": {"type": "string", "format": "date"},
+                        "period_end": {"type": "string", "format": "date"},
+                        "due_date": {"type": "string", "format": "date"},
+                        "total_due": {"type": "number", "minimum": 0},
+                        "subtotal": {"type": "number", "minimum": 0},
+                        "subsidy_credit": {"type": "number"},
+                        "late_fees": {"type": "number", "minimum": 0},
+                        "status": {"type": "string", "enum": ["draft", "issued", "partial", "paid", "void"]},
+                    },
+                },
+            },
+        },
+    },
+    ("POST", "/billing/accounts/<account_id_val>/parties"): {
+        "type": "object",
+        "required": ["guardian"],
+        "properties": {
+            "guardian": {"type": "ref"},
+            "payer_label": {"type": "string"},
+            "share_pct": {"type": "number", "minimum": 0},
+            "fixed_amount": {"type": "number", "minimum": 0},
+            "priority": {"type": "number"},
+            "auto_debit": {"type": "boolean"},
+            "status": {"type": "string", "enum": ["active", "inactive", "paused"]},
+            "notes": {"type": "string"},
+        },
+    },
+    ("PATCH", "/billing/accounts/<account_id_val>/parties/<party_id_val>"): {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+            "payer_label": {"type": "string"},
+            "share_pct": {"type": "number", "minimum": 0},
+            "fixed_amount": {"type": "number", "minimum": 0},
+            "priority": {"type": "number"},
+            "auto_debit": {"type": "boolean"},
+            "status": {"type": "string", "enum": ["active", "inactive", "paused"]},
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    ("POST", "/billing/invoices/<invoice_id_val>/autopay/run"): {
+        "type": "object",
+        "properties": {
+            "simulate_fail_party_ids": {"type": "array", "items": {"type": "ref"}},
+            "dry_run": {"type": "boolean"},
+        },
+    },
+    ("POST", "/billing/payments"): {
+        "type": "object",
+        "required": ["invoice", "amount", "paid_at", "method"],
+        "properties": {
+            "invoice": {"type": "ref"},
+            "amount": {"type": "number", "minimum": 0.01},
+            "paid_at": {"type": "string", "format": "date-time"},
+            "method": {"type": "string"},
+            "txn_ref": {"type": "string"},
+            "status": {"type": "string", "enum": ["posted", "pending", "failed", "void"]},
+        },
+    },
+    ("POST", "/subsidy/claims"): {
+        "type": "object",
+        "required": ["claim_month", "child", "program", "expected_amount"],
+        "properties": {
+            "claim_month": {"type": "string"},
+            "child": {"type": "ref"},
+            "program": {"type": "string"},
+            "expected_amount": {"type": "number", "minimum": 0},
+            "received_amount": {"type": "number"},
+            "status": {"type": "string", "enum": ["submitted", "paid", "variance"]},
+            "submitted_at": {"type": "string", "format": "date-time"},
+            "paid_at": {"type": "string", "format": "date-time"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/subsidy/reconcile/<claim_id_val>"): {
+        "type": "object",
+        "properties": {
+            "received_amount": {"type": "number"},
+            "status": {"type": "string", "enum": ["submitted", "paid", "variance"]},
+            "paid_at": {"type": "string", "format": "date-time"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/compliance/medication-logs"): {
+        "type": "object",
+        "required": ["child", "medication_name", "dosage"],
+        "properties": {
+            "child": {"type": "ref"},
+            "medication_name": {"type": "string"},
+            "dosage": {"type": "string"},
+            "administered": {"type": "boolean"},
+            "administered_at": {"type": "string", "format": "date-time"},
+            "administered_by": {"type": "ref"},
+            "reason": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/compliance/sanitation-checks"): {
+        "type": "object",
+        "required": ["check_area", "check_item", "status", "checked_by"],
+        "properties": {
+            "check_area": {"type": "string"},
+            "check_item": {"type": "string"},
+            "status": {"type": "string", "enum": ["completed", "issue", "skipped"]},
+            "checked_at": {"type": "string", "format": "date-time"},
+            "checked_by": {"type": "ref"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/compliance/sleep-safety-checks"): {
+        "type": "object",
+        "required": ["child", "status", "checked_by"],
+        "properties": {
+            "child": {"type": "ref"},
+            "status": {"type": "string", "enum": ["safe", "attention", "incident"]},
+            "check_time": {"type": "string", "format": "date-time"},
+            "checked_by": {"type": "ref"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/waitlist"): {
+        "type": "object",
+        "required": ["child_first_name", "child_last_name", "desired_start_date", "status"],
+        "properties": {
+            "child_first_name": {"type": "string"},
+            "child_last_name": {"type": "string"},
+            "desired_start_date": {"type": "string", "format": "date"},
+            "status": {"type": "string", "enum": ["new", "contacted", "tour_scheduled", "offered", "enrolled", "lost"]},
+            "priority_score": {"type": "number"},
+            "follow_up_sla_hours": {"type": "number", "minimum": 0},
+            "last_contact_at": {"type": "string", "format": "date-time"},
+            "next_follow_up_at": {"type": "string", "format": "date-time"},
+            "conversion_score": {"type": "number"},
+            "retention_risk_score": {"type": "number"},
+        },
+    },
+    ("PATCH", "/waitlist/<entry_id_val>"): {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+            "status": {"type": "string", "enum": ["new", "contacted", "tour_scheduled", "offered", "enrolled", "lost"]},
+            "priority_score": {"type": "number"},
+            "follow_up_sla_hours": {"type": "number", "minimum": 0},
+            "next_follow_up_at": {"type": "string", "format": "date-time"},
+            "conversion_score": {"type": "number"},
+            "retention_risk_score": {"type": "number"},
+            "tour_date": {"type": "string", "format": "date-time"},
+        },
+    },
+    ("POST", "/waitlist/<entry_id_val>/automation-action"): {
+        "type": "object",
+        "required": ["action_key"],
+        "properties": {
+            "action_key": {"type": "string"},
+            "escalate": {"type": "boolean"},
+            "escalation_reason": {"type": "string"},
+            "nudge_sent": {"type": "boolean"},
+            "follow_up_sla_hours": {"type": "number", "minimum": 0},
+            "next_follow_up_at": {"type": "string", "format": "date-time"},
+        },
+    },
+    ("POST", "/waitlist/<entry_id_val>/advance"): {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": ["new", "contacted", "tour_scheduled", "offered", "enrolled", "lost"]},
+            "follow_up_sla_hours": {"type": "number", "minimum": 0},
+            "retention_risk_score": {"type": "number"},
+        },
+    },
+    ("POST", "/waitlist/<entry_id_val>/schedule-tour"): {
+        "type": "object",
+        "required": ["tour_date"],
+        "properties": {
+            "tour_date": {"type": "string", "format": "date-time"},
+            "follow_up_sla_hours": {"type": "number", "minimum": 0},
+            "next_follow_up_at": {"type": "string", "format": "date-time"},
+        },
+    },
+    ("POST", "/waitlist/scoring/run"): {
+        "type": "object",
+        "properties": {
+            "persist": {"type": "boolean"},
+            "open_only": {"type": "boolean"},
+        },
+    },
+    ("POST", "/regulatory/rules/ingest"): {
+        "type": "object",
+        "properties": {
+            "ingest_batch_id": {"type": "string"},
+            "deactivate_previous": {"type": "boolean"},
+            "dry_run": {"type": "boolean"},
+            "rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["rule_key", "version", "category", "jurisdiction", "title"],
+                    "properties": {
+                        "rule_key": {"type": "string"},
+                        "version": {"type": "string"},
+                        "category": {"type": "string"},
+                        "jurisdiction": {"type": "string"},
+                        "title": {"type": "string"},
+                        "rule_text": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "keywords": {"type": "string"},
+                        "source_url": {"type": "string"},
+                        "source_document": {"type": "string"},
+                        "effective_date": {"type": "string"},
+                        "active": {"type": "boolean"},
+                    },
+                },
+            },
+        },
+    },
+    ("POST", "/regulatory/audit/risk-assessments/run"): {
+        "type": "object",
+        "properties": {
+            "jurisdiction": {"type": "string"},
+            "category": {"type": "string"},
+            "status": {"type": "string", "enum": ["open", "in_progress", "resolved", "closed"]},
+        },
+    },
+    ("POST", "/ops/workflows/heartbeat"): {
+        "type": "object",
+        "required": ["workflow_key", "status"],
+        "properties": {
+            "workflow_key": {"type": "string"},
+            "workflow_name": {"type": "string"},
+            "status": {"type": "string", "enum": ["success", "error", "running", "unknown"]},
+            "ran_at": {"type": "string", "format": "date-time"},
+            "error": {"type": "string"},
+        },
+    },
+    ("POST", "/marketing/leads"): {
+        "type": "object",
+        "required": ["family_name", "channel", "status"],
+        "properties": {
+            "family_name": {"type": "string"},
+            "email": {"type": "string"},
+            "phone": {"type": "string"},
+            "child_age_group": {"type": "string"},
+            "channel": {"type": "string"},
+            "campaign": {"type": "string"},
+            "status": {"type": "string", "enum": ["new", "contacted", "tour_scheduled", "converted", "lost"]},
+            "inquiry_date": {"type": "string", "format": "date-time"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/marketing/reviews"): {
+        "type": "object",
+        "required": ["family_name", "platform", "status"],
+        "properties": {
+            "family_name": {"type": "string"},
+            "platform": {"type": "string", "enum": ["google", "yelp", "facebook", "other"]},
+            "status": {"type": "string", "enum": ["pending", "requested", "received", "flagged"]},
+            "rating": {"type": "number", "minimum": 1, "maximum": 5},
+            "requested_at": {"type": "string", "format": "date-time"},
+            "received_at": {"type": "string", "format": "date-time"},
+            "review_url": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("POST", "/marketing/insurance/policies"): {
+        "type": "object",
+        "required": ["policy_type", "carrier", "policy_number", "status"],
+        "properties": {
+            "policy_type": {"type": "string"},
+            "carrier": {"type": "string"},
+            "policy_number": {"type": "string"},
+            "coverage_amount": {"type": "number", "minimum": 0},
+            "effective_date": {"type": "string", "format": "date"},
+            "expiration_date": {"type": "string", "format": "date"},
+            "status": {"type": "string", "enum": ["active", "pending", "expired", "cancelled"]},
+            "renewal_contact": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+    },
+    ("PATCH", "/marketing/insurance/policies/<policy_id_val>"): {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+            "policy_type": {"type": "string"},
+            "carrier": {"type": "string"},
+            "policy_number": {"type": "string"},
+            "coverage_amount": {"type": "number", "minimum": 0},
+            "effective_date": {"type": "string", "format": "date"},
+            "expiration_date": {"type": "string", "format": "date"},
+            "status": {"type": "string", "enum": ["active", "pending", "expired", "cancelled"]},
+            "renewal_contact": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    ("POST", "/marketing/competitors/snapshots"): {
+        "type": "object",
+        "required": ["competitor_name"],
+        "properties": {
+            "competitor_name": {"type": "string"},
+            "location": {"type": "string"},
+            "tuition_band": {"type": "string"},
+            "capacity_estimate": {"type": "number", "minimum": 0},
+            "waitlist_estimate": {"type": "number", "minimum": 0},
+            "source_url": {"type": "string"},
+            "captured_at": {"type": "string", "format": "date-time"},
+            "notes": {"type": "string"},
+        },
+    },
+}
+
+QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ("GET", "/waitlist"): [
+        {"name": "status", "schema": {"type": "string"}},
+        {"name": "followup_due", "schema": {"type": "boolean"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/pickup/events"): [
+        {"name": "child_id", "schema": {"type": "string"}},
+        {"name": "approved", "schema": {"type": "boolean"}},
+        {"name": "from", "schema": {"type": "string", "format": "date-time"}},
+        {"name": "to", "schema": {"type": "string", "format": "date-time"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/billing/invoices/<invoice_id_val>/autopay/attempts"): [
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/subsidy/claims"): [
+        {"name": "claim_month", "schema": {"type": "string"}},
+        {"name": "status", "schema": {"type": "string"}},
+        {"name": "program", "schema": {"type": "string"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/marketing/leads"): [
+        {"name": "channel", "schema": {"type": "string"}},
+        {"name": "status", "schema": {"type": "string"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/marketing/reviews"): [
+        {"name": "platform", "schema": {"type": "string"}},
+        {"name": "status", "schema": {"type": "string"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/marketing/insurance/policies"): [
+        {"name": "status", "schema": {"type": "string"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/marketing/competitors/snapshots"): [
+        {"name": "competitor_name", "schema": {"type": "string"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 200}},
+        {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
+        {"name": "sort_by", "schema": {"type": "string"}},
+        {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+}
+
+IDEMPOTENT_ENDPOINTS: set[tuple[str, str]] = {
+    ("POST", "/pickup/events"),
+    ("POST", "/billing/invoices/generate"),
+    ("POST", "/billing/invoices/<invoice_id_val>/autopay/run"),
+    ("POST", "/subsidy/claims"),
+    ("POST", "/subsidy/reconcile/<claim_id_val>"),
+    ("POST", "/waitlist"),
+}
+
+_IDEMPOTENCY_LOCK = threading.Lock()
+_IDEMPOTENCY_STORE: dict[str, dict[str, Any]] = {}
+_OPENAPI_CACHE: dict[str, Any] | None = None
+
+
+def _validation_error_response(details: list[dict[str, str]], status_code: int = 400):
+    """Return a standard validation error envelope with field-level details."""
+    return jsonify({
+        "error": {
+            "code": "validation_error",
+            "message": "payload validation failed",
+            "details": details,
+        }
+    }), status_code
+
+
+def _idempotency_fingerprint() -> str:
+    """Build payload fingerprint for idempotency comparison."""
+    parsed = request.get_json(silent=True)
+    if parsed is not None:
+        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    else:
+        canonical = request.get_data(as_text=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _idempotency_key_scope() -> str:
+    """Build deterministic idempotency scope for this request."""
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    return f"{request.method}:{request.path}:{header_key}"
+
+
+def _cleanup_idempotency_store_locked(now_ts: float) -> None:
+    """Drop expired idempotency cache entries (lock must be held)."""
+    expired = [key for key, value in _IDEMPOTENCY_STORE.items() if value.get("expires_at", 0) <= now_ts]
+    for key in expired:
+        _IDEMPOTENCY_STORE.pop(key, None)
+
+
+def idempotent_endpoint(func):
+    """Decorator: replay cached response for repeated Idempotency-Key requests."""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if not IDEMPOTENCY_ENABLED:
+            return func(*args, **kwargs)
+        header_key = request.headers.get("Idempotency-Key", "").strip()
+        if not header_key:
+            return func(*args, **kwargs)
+        if len(header_key) > 128:
+            return _validation_error_response([{"field": "header.Idempotency-Key", "message": "must be <= 128 chars"}])
+
+        scope_key = _idempotency_key_scope()
+        fingerprint = _idempotency_fingerprint()
+        now_ts = time.time()
+
+        with _IDEMPOTENCY_LOCK:
+            _cleanup_idempotency_store_locked(now_ts)
+            existing = _IDEMPOTENCY_STORE.get(scope_key)
+            if existing:
+                if existing.get("fingerprint") != fingerprint:
+                    return jsonify({
+                        "error": {
+                            "code": "idempotency_key_reused",
+                            "message": "Idempotency-Key has already been used with a different payload",
+                        }
+                    }), 409
+                if existing.get("state") == "done":
+                    if existing.get("is_json"):
+                        replay = jsonify(existing.get("body"))
+                    else:
+                        replay = make_response(existing.get("body", ""))
+                        replay.headers["Content-Type"] = existing.get("content_type", "application/json")
+                    replay.status_code = int(existing.get("status_code", 200))
+                    replay.headers["X-Idempotent-Replay"] = "true"
+                    return replay
+                return jsonify({
+                    "error": {
+                        "code": "idempotency_in_progress",
+                        "message": "Idempotent request with this key is already in progress",
+                    }
+                }), 409
+
+            _IDEMPOTENCY_STORE[scope_key] = {
+                "state": "in_progress",
+                "fingerprint": fingerprint,
+                "expires_at": now_ts + IDEMPOTENCY_TTL_SECONDS,
+            }
+
+        try:
+            response = make_response(func(*args, **kwargs))
+        except Exception:
+            with _IDEMPOTENCY_LOCK:
+                _IDEMPOTENCY_STORE.pop(scope_key, None)
+            raise
+
+        if response.status_code < 500:
+            payload = response.get_json(silent=True)
+            is_json = payload is not None
+            body = payload if is_json else response.get_data(as_text=True)
+            with _IDEMPOTENCY_LOCK:
+                _IDEMPOTENCY_STORE[scope_key] = {
+                    "state": "done",
+                    "fingerprint": fingerprint,
+                    "status_code": response.status_code,
+                    "is_json": is_json,
+                    "body": body,
+                    "content_type": response.headers.get("Content-Type", "application/json"),
+                    "expires_at": now_ts + IDEMPOTENCY_TTL_SECONDS,
+                }
+            response.headers["X-Idempotent-Replay"] = "false"
+        else:
+            with _IDEMPOTENCY_LOCK:
+                _IDEMPOTENCY_STORE.pop(scope_key, None)
+        return response
+
+    return wrapper
+
+
+def _matches_schema_type(value, schema_type: str) -> bool:
+    """Return True when value matches expected schema type."""
+    if schema_type == "string":
+        return isinstance(value, str)
+    if schema_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if schema_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if schema_type == "boolean":
+        return isinstance(value, bool)
+    if schema_type == "object":
+        return isinstance(value, dict)
+    if schema_type == "array":
+        return isinstance(value, list)
+    if schema_type == "ref":
+        if isinstance(value, int) and not isinstance(value, bool):
+            return True
+        return isinstance(value, str) and value.strip().isdigit()
+    return True
+
+
+def _validate_json_against_schema(data, schema: dict[str, Any], path: str = "body") -> list[dict[str, str]]:
+    """Validate JSON-like payload against a lightweight schema definition."""
+    errors: list[dict[str, str]] = []
+    expected_type = schema.get("type")
+    if expected_type and not _matches_schema_type(data, expected_type):
+        errors.append({"field": path, "message": f"must be {expected_type}"})
+        return errors
+
+    if expected_type == "object":
+        required = schema.get("required", [])
+        for field in required:
+            if field not in data or data.get(field) in (None, ""):
+                errors.append({"field": f"{path}.{field}", "message": "is required"})
+
+        min_props = schema.get("minProperties")
+        if isinstance(min_props, int) and len(data) < min_props:
+            errors.append({"field": path, "message": f"must include at least {min_props} properties"})
+
+        properties = schema.get("properties", {})
+        for key, value in data.items():
+            child_path = f"{path}.{key}"
+            child_schema = properties.get(key)
+            if child_schema:
+                errors.extend(_validate_json_against_schema(value, child_schema, child_path))
+            elif schema.get("additionalProperties") is False:
+                errors.append({"field": child_path, "message": "is not allowed"})
+
+    if expected_type == "array":
+        min_items = schema.get("minItems")
+        if isinstance(min_items, int) and len(data) < min_items:
+            errors.append({"field": path, "message": f"must include at least {min_items} item(s)"})
+        item_schema = schema.get("items")
+        if item_schema:
+            for idx, item in enumerate(data):
+                errors.extend(_validate_json_against_schema(item, item_schema, f"{path}[{idx}]"))
+
+    enum_values = schema.get("enum")
+    if enum_values and data not in enum_values:
+        errors.append({"field": path, "message": f"must be one of {enum_values}"})
+
+    if expected_type in {"string", "ref"}:
+        min_len = schema.get("minLength")
+        if isinstance(min_len, int) and isinstance(data, str) and len(data.strip()) < min_len:
+            errors.append({"field": path, "message": f"must be at least {min_len} characters"})
+        fmt = schema.get("format")
+        if fmt == "date-time" and isinstance(data, str) and data.strip() and not _parse_iso_datetime(data):
+            errors.append({"field": path, "message": "must be ISO datetime"})
+        if fmt == "date" and isinstance(data, str) and data.strip() and not _parse_iso_date(data):
+            errors.append({"field": path, "message": "must be ISO date (YYYY-MM-DD)"})
+
+    if expected_type in {"number", "integer"}:
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if minimum is not None and isinstance(data, (int, float)) and data < minimum:
+            errors.append({"field": path, "message": f"must be >= {minimum}"})
+        if maximum is not None and isinstance(data, (int, float)) and data > maximum:
+            errors.append({"field": path, "message": f"must be <= {maximum}"})
+
+    return errors
+
+
+def _extra_validation_errors(route_rule: str, payload: dict) -> list[dict[str, str]]:
+    """Route-specific validation checks not covered by base schema rules."""
+    errors: list[dict[str, str]] = []
+    if route_rule == "/children/<child_id_val>/guardians":
+        guardian_id_val = payload.get("guardian_id")
+        guardian_obj = payload.get("guardian")
+        if guardian_id_val in (None, "") and not isinstance(guardian_obj, dict):
+            errors.append({"field": "body.guardian", "message": "guardian object is required when guardian_id is not provided"})
+        if guardian_id_val in (None, "") and isinstance(guardian_obj, dict):
+            for field in ("first_name", "last_name", "phone"):
+                if guardian_obj.get(field) in (None, ""):
+                    errors.append({"field": f"body.guardian.{field}", "message": "is required"})
+    if route_rule == "/pickup/events":
+        approved = payload.get("approved")
+        if isinstance(approved, bool) and not approved:
+            if str(payload.get("denial_code", "")).strip().lower() not in PICKUP_DENIAL_CODES:
+                errors.append({"field": "body.denial_code", "message": f"must be one of {sorted(PICKUP_DENIAL_CODES)} when approved=false"})
+        if payload.get("override_used") is True:
+            if not str(payload.get("override_reason", "")).strip():
+                errors.append({"field": "body.override_reason", "message": "is required when override_used=true"})
+            if payload.get("override_approved_by") in (None, ""):
+                errors.append({"field": "body.override_approved_by", "message": "is required when override_used=true"})
+    if route_rule == "/billing/accounts/<account_id_val>/parties":
+        share_pct = _to_float(payload.get("share_pct"))
+        fixed_amount = _to_float(payload.get("fixed_amount"))
+        if share_pct <= 0 and fixed_amount <= 0:
+            errors.append({"field": "body", "message": "either share_pct or fixed_amount must be > 0"})
+    if route_rule == "/compliance/medication-logs":
+        if payload.get("administered") is True and payload.get("administered_by") in (None, ""):
+            errors.append({"field": "body.administered_by", "message": "is required when administered=true"})
+    if route_rule == "/regulatory/rules/ingest":
+        rules = payload.get("rules")
+        if rules is None and not payload:
+            errors.append({"field": "body.rules", "message": "rules array is required"})
+        elif rules is not None and (not isinstance(rules, list) or not rules):
+            errors.append({"field": "body.rules", "message": "must be a non-empty array"})
+    return errors
+
+
+def _parse_list_controls(
+    *,
+    allowed_sort_fields: set[str],
+    default_sort_by: str = "id",
+    default_sort_dir: str = "asc",
+    default_limit: int = 50,
+    max_limit: int = 200,
+) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    """Parse and validate shared list controls: limit/offset/sort_by/sort_dir."""
+    errors: list[dict[str, str]] = []
+
+    limit_raw = request.args.get("limit", str(default_limit))
+    offset_raw = request.args.get("offset", "0")
+    sort_by = str(request.args.get("sort_by", default_sort_by)).strip() or default_sort_by
+    sort_dir = str(request.args.get("sort_dir", default_sort_dir)).strip().lower() or default_sort_dir
+
+    try:
+        limit = int(limit_raw)
+    except (TypeError, ValueError):
+        limit = -1
+    try:
+        offset = int(offset_raw)
+    except (TypeError, ValueError):
+        offset = -1
+
+    if limit < 1 or limit > max_limit:
+        errors.append({"field": "query.limit", "message": f"must be between 1 and {max_limit}"})
+    if offset < 0:
+        errors.append({"field": "query.offset", "message": "must be >= 0"})
+    if sort_dir not in {"asc", "desc"}:
+        errors.append({"field": "query.sort_dir", "message": "must be one of ['asc', 'desc']"})
+    if sort_by not in allowed_sort_fields:
+        errors.append({"field": "query.sort_by", "message": f"must be one of {sorted(allowed_sort_fields)}"})
+
+    if errors:
+        return None, errors
+    return {
+        "limit": limit,
+        "offset": offset,
+        "sort_by": sort_by,
+        "sort_dir": sort_dir,
+    }, []
+
+
+def _sort_records(records: list[dict], *, sort_by: str, sort_dir: str) -> list[dict]:
+    """Sort records deterministically by id or one field under record.fields."""
+    reverse = sort_dir == "desc"
+
+    def _value(record):
+        if sort_by == "id":
+            return _to_float(record.get("id"))
+        raw = record.get("fields", {}).get(sort_by)
+        if raw in (None, ""):
+            return (2, 0)
+        parsed_dt = _parse_iso_datetime(str(raw))
+        if parsed_dt:
+            return (0, parsed_dt.timestamp())
+        try:
+            return (0, float(raw))
+        except (TypeError, ValueError):
+            return (1, str(raw).lower())
+
+    return sorted(records, key=lambda r: (_value(r), _to_float(r.get("id"))), reverse=reverse)
+
+
+def _paginate_records(records: list[dict], *, limit: int, offset: int) -> list[dict]:
+    """Return a deterministic paginated slice."""
+    return records[offset: offset + limit]
+
+
+def _schema_to_openapi(schema: dict[str, Any]) -> dict[str, Any]:
+    """Translate lightweight validation schema into OpenAPI JSON schema."""
+    converted: dict[str, Any] = {}
+    schema_type = schema.get("type")
+    if schema_type == "ref":
+        converted["oneOf"] = [{"type": "integer"}, {"type": "string"}]
+    elif schema_type:
+        converted["type"] = schema_type
+
+    for key in ("required", "enum", "minItems", "minLength", "minimum", "maximum", "minProperties"):
+        if key in schema:
+            converted[key] = schema[key]
+
+    if "properties" in schema:
+        converted["properties"] = {
+            prop: _schema_to_openapi(prop_schema)
+            for prop, prop_schema in schema["properties"].items()
+        }
+    if "items" in schema:
+        converted["items"] = _schema_to_openapi(schema["items"])
+    if "additionalProperties" in schema:
+        converted["additionalProperties"] = schema["additionalProperties"]
+    if schema.get("format"):
+        converted["format"] = schema["format"]
+    return converted
+
+
+def _rule_to_openapi_path(rule: str) -> str:
+    """Convert Flask route placeholders to OpenAPI path placeholders."""
+    return re.sub(r"<(?:[^:>]+:)?([^>]+)>", r"{\1}", rule)
+
+
+def _build_openapi_spec() -> dict[str, Any]:
+    """Build OpenAPI spec from registered Flask routes and validation schemas."""
+    paths: dict[str, Any] = {}
+    for rule in sorted(app.url_map.iter_rules(), key=lambda r: r.rule):
+        if rule.endpoint == "static":
+            continue
+        path = _rule_to_openapi_path(rule.rule)
+        path_item = paths.setdefault(path, {})
+        view_func = app.view_functions.get(rule.endpoint)
+        summary = ""
+        if view_func and view_func.__doc__:
+            summary = view_func.__doc__.strip().splitlines()[0]
+        for method in sorted(m for m in rule.methods if m in {"GET", "POST", "PATCH", "PUT", "DELETE"}):
+            operation: dict[str, Any] = {
+                "operationId": f"{rule.endpoint}_{method.lower()}",
+                "summary": summary or f"{method} {path}",
+                "responses": {
+                    "200": {"description": "Success"},
+                    "400": {"description": "Validation Error"},
+                    "401": {"description": "Unauthorized"},
+                },
+            }
+            if method == "POST":
+                operation["responses"]["201"] = {"description": "Created"}
+            if rule.endpoint not in PUBLIC_ROUTES:
+                operation["security"] = [{"ApiKeyAuth": []}]
+            if rule.arguments:
+                operation["parameters"] = [
+                    {
+                        "name": arg,
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                    for arg in sorted(rule.arguments)
+                ]
+            query_params = QUERY_PARAM_SCHEMAS.get((method, rule.rule), [])
+            if query_params:
+                params = operation.setdefault("parameters", [])
+                for qp in query_params:
+                    params.append({
+                        "name": qp["name"],
+                        "in": "query",
+                        "required": bool(qp.get("required", False)),
+                        "schema": qp.get("schema", {"type": "string"}),
+                    })
+            if (method, rule.rule) in IDEMPOTENT_ENDPOINTS:
+                params = operation.setdefault("parameters", [])
+                params.append({
+                    "name": "Idempotency-Key",
+                    "in": "header",
+                    "required": False,
+                    "schema": {"type": "string", "maxLength": 128},
+                    "description": f"Optional replay key (TTL: {IDEMPOTENCY_TTL_SECONDS}s). Same key+payload returns cached response.",
+                })
+            req_schema = REQUEST_VALIDATION_SCHEMAS.get((method, rule.rule))
+            if req_schema:
+                operation["requestBody"] = {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": _schema_to_openapi(req_schema)
+                        }
+                    },
+                }
+            path_item[method.lower()] = operation
+
+    return {
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Daycare Ops API",
+            "version": "1.1.0-p1",
+            "description": "Operational API for daycare staffing, compliance, billing, waitlist, and workflow health.",
+        },
+        "servers": [{"url": "/"}],
+        "security": [{"ApiKeyAuth": []}],
+        "components": {
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "X-API-Key",
+                }
+            }
+        },
+        "paths": paths,
+    }
+
 PICKUP_DENIAL_CODES = {
     "guardian_not_linked",
     "legal_restriction",
@@ -611,6 +1791,36 @@ PICKUP_DENIAL_CODES = {
     "court_order_restriction",
     "other",
 }
+
+SANITATION_STATUSES = {"completed", "issue", "skipped"}
+SLEEP_SAFETY_STATUSES = {"safe", "attention", "incident"}
+WAITLIST_FLOW = ["new", "contacted", "tour_scheduled", "offered", "enrolled"]
+WAITLIST_SLA_HOURS = {
+    "new": 48,
+    "contacted": 48,
+    "tour_scheduled": 24,
+    "offered": 48,
+    "enrolled": 168,
+}
+RISK_LEVEL_THRESHOLDS = (
+    (70, "high"),
+    (40, "medium"),
+)
+WORKFLOW_FRESHNESS_HOURS = {
+    "daily_summary_parent_reports": 26,
+    "staffing_coverage_check": 26,
+    "subsidy_deadline_alert": 26,
+    "subsidy_reconciliation_alert": 26,
+    "autopay_due_invoices": 26,
+    "waitlist_followup_sla_alert": 26,
+    "waitlist_stage_playbook_daily": 26,
+    "enrollment_forecast_monthly": 35 * 24,
+    "regulatory_rules_ingestion_weekly": 8 * 24,
+}
+MARKETING_LEAD_STATUSES = {"new", "contacted", "tour_scheduled", "converted", "lost"}
+REVIEW_PLATFORMS = {"google", "yelp", "facebook", "other"}
+REVIEW_STATUSES = {"pending", "requested", "received", "flagged"}
+INSURANCE_POLICY_STATUSES = {"active", "pending", "expired", "cancelled"}
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -626,6 +1836,380 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(raw)
     except ValueError:
         return None
+
+
+def _parse_iso_date(value: str | None) -> str | None:
+    """Parse strict ISO date strings (YYYY-MM-DD); return canonical form or None."""
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return parsed.date().isoformat()
+
+
+def _filter_records_by_day(records: list[dict], field_name: str, day: str | None) -> list[dict]:
+    """Filter records by YYYY-MM-DD prefix of a datetime-like field."""
+    if not day:
+        return records
+    day = str(day).strip()
+    if not day:
+        return records
+    result = []
+    for record in records:
+        raw = str(record.get("fields", {}).get(field_name, "")).strip()
+        if raw.startswith(day):
+            result.append(record)
+    return result
+
+
+def _waitlist_followup_due_entries(entries: list[dict]) -> list[dict]:
+    """Return waitlist entries whose next_follow_up_at is due (UTC now or earlier)."""
+    now = datetime.utcnow()
+    due = []
+    for entry in entries:
+        fields = entry.get("fields", {})
+        next_follow_up = _parse_iso_datetime(fields.get("next_follow_up_at"))
+        if next_follow_up and next_follow_up <= now:
+            due.append(entry)
+    return due
+
+
+def _clamp_score(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
+    """Clamp numeric score into the inclusive score range."""
+    return max(minimum, min(maximum, value))
+
+
+def _waitlist_score_entry(fields: dict, now: datetime) -> tuple[float, float, list[str], list[str]]:
+    """Return conversion/risk scores and reason lists for one waitlist entry."""
+    stage = str(fields.get("status", "new")).strip().lower()
+    priority = _to_float(fields.get("priority_score", 0))
+    last_contact = _parse_iso_datetime(fields.get("last_contact_at"))
+    next_follow_up = _parse_iso_datetime(fields.get("next_follow_up_at"))
+    tour_date = _parse_iso_datetime(fields.get("tour_date"))
+    desired_start = _parse_iso_datetime(fields.get("desired_start_date"))
+
+    hours_since_contact = ((now - last_contact).total_seconds() / 3600.0) if last_contact else None
+    hours_since_tour = ((now - tour_date).total_seconds() / 3600.0) if tour_date else None
+    days_to_start = ((desired_start - now).total_seconds() / 86400.0) if desired_start else None
+    followup_overdue = bool(next_follow_up and next_follow_up <= now)
+    offered_no_response = bool(stage == "offered" and hours_since_contact is not None and hours_since_contact > 72)
+    missed_tour = bool(stage == "tour_scheduled" and hours_since_tour is not None and hours_since_tour > 2)
+
+    conversion = _clamp_score(priority * 10.0)
+    risk = 20.0
+    conversion_reasons: list[str] = []
+    risk_reasons: list[str] = []
+
+    stage_conversion_bonus = {
+        "new": 0.0,
+        "contacted": 10.0,
+        "tour_scheduled": 20.0,
+        "offered": 30.0,
+        "enrolled": 40.0,
+        "lost": -20.0,
+    }
+    stage_risk_delta = {
+        "new": 0.0,
+        "contacted": 5.0,
+        "tour_scheduled": 10.0,
+        "offered": 15.0,
+        "enrolled": -10.0,
+        "lost": 35.0,
+    }
+
+    conversion += stage_conversion_bonus.get(stage, 0.0)
+    risk += stage_risk_delta.get(stage, 0.0)
+    if stage in stage_conversion_bonus:
+        conversion_reasons.append(f"stage_{stage}")
+    if stage in stage_risk_delta:
+        risk_reasons.append(f"stage_{stage}")
+
+    if tour_date:
+        conversion += 8.0
+        conversion_reasons.append("tour_recorded")
+
+    if days_to_start is not None:
+        if days_to_start <= 30:
+            conversion += 15.0
+            risk -= 5.0
+            conversion_reasons.append("start_within_30d")
+            risk_reasons.append("start_within_30d")
+        elif days_to_start <= 60:
+            conversion += 8.0
+            conversion_reasons.append("start_within_60d")
+        elif days_to_start >= 120:
+            conversion -= 8.0
+            risk += 5.0
+            conversion_reasons.append("start_120d_plus")
+            risk_reasons.append("start_120d_plus")
+
+    if hours_since_contact is not None:
+        if hours_since_contact > 72:
+            conversion -= 15.0
+            risk += 15.0
+            conversion_reasons.append("contact_gap_72h")
+            risk_reasons.append("contact_gap_72h")
+        if hours_since_contact > 168:
+            conversion -= 10.0
+            risk += 15.0
+            conversion_reasons.append("contact_gap_168h")
+            risk_reasons.append("contact_gap_168h")
+
+    if followup_overdue:
+        conversion -= 15.0
+        risk += 25.0
+        conversion_reasons.append("followup_overdue")
+        risk_reasons.append("followup_overdue")
+
+    if offered_no_response:
+        conversion -= 20.0
+        risk += 25.0
+        conversion_reasons.append("offered_no_response_72h")
+        risk_reasons.append("offered_no_response_72h")
+
+    if missed_tour:
+        conversion -= 20.0
+        risk += 30.0
+        conversion_reasons.append("tour_missed")
+        risk_reasons.append("tour_missed")
+
+    if priority >= 8:
+        conversion += 5.0
+        risk -= 5.0
+        conversion_reasons.append("priority_high")
+        risk_reasons.append("priority_high")
+    elif priority <= 2:
+        conversion -= 5.0
+        risk += 5.0
+        conversion_reasons.append("priority_low")
+        risk_reasons.append("priority_low")
+
+    conversion = _clamp_score(conversion)
+    if conversion >= 70:
+        risk -= 10.0
+        risk_reasons.append("conversion_strong")
+    risk = _clamp_score(risk)
+
+    return (
+        round(conversion, 2),
+        round(risk, 2),
+        sorted(set(conversion_reasons)),
+        sorted(set(risk_reasons)),
+    )
+
+
+def _risk_level_from_score(score: float) -> str:
+    """Return risk level label for a numeric score."""
+    for threshold, label in RISK_LEVEL_THRESHOLDS:
+        if score >= threshold:
+            return label
+    return "low"
+
+
+def _normalize_regulatory_rule_payload(raw: dict, ingest_batch_id: str) -> tuple[dict | None, str | None]:
+    """Normalize one rule payload item; returns (fields, error)."""
+    rule_key = str(raw.get("rule_key", "")).strip().lower()
+    version = str(raw.get("version", "")).strip()
+    category = str(raw.get("category", "")).strip()
+    jurisdiction = str(raw.get("jurisdiction", "")).strip()
+    title = str(raw.get("title", "")).strip()
+    rule_text = str(raw.get("rule_text", "")).strip()
+    summary = str(raw.get("summary", "")).strip()
+    if not all([rule_key, version, category, jurisdiction, title]):
+        return None, "missing required fields: rule_key, version, category, jurisdiction, title"
+    if not rule_text and not summary:
+        return None, "rule_text or summary is required"
+    fields = {
+        "rule_key": rule_key,
+        "version": version,
+        "category": category,
+        "jurisdiction": jurisdiction,
+        "title": title,
+        "rule_text": rule_text,
+        "summary": summary,
+        "keywords": str(raw.get("keywords", "")),
+        "source_url": str(raw.get("source_url", "")),
+        "source_document": str(raw.get("source_document", "")),
+        "effective_date": str(raw.get("effective_date", "")),
+        "active": _to_bool(raw.get("active", True)),
+        "ingested_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "supersedes_version": str(raw.get("supersedes_version", "")),
+        "ingest_batch_id": ingest_batch_id,
+    }
+    return fields, None
+
+
+def _compute_regulatory_risk_snapshot(jurisdiction: str | None = None) -> dict:
+    """Compute a risk summary from regulatory and compliance operational signals."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    active_rules = get_regulatory_rules(jurisdiction=jurisdiction, active_only=True)
+    med_logs_today = get_medication_logs()
+    med_logs_today = _filter_records_by_day(med_logs_today, "administered_at", today)
+    sanitation_today = get_sanitation_checks()
+    sanitation_today = _filter_records_by_day(sanitation_today, "checked_at", today)
+    sleep_today = get_sleep_safety_checks()
+    sleep_today = _filter_records_by_day(sleep_today, "check_time", today)
+    urgent_subsidies = get_urgent_subsidies()
+    open_assessments = get_regulatory_risk_assessments(status="open")
+
+    findings: list[str] = []
+    actions: list[str] = []
+    score = 0.0
+
+    if not active_rules:
+        score += 35
+        findings.append("No active regulatory rules ingested.")
+        actions.append("Ingest current state licensing rules and set active versions.")
+
+    stale_rules = 0
+    for row in active_rules:
+        effective_date = str(row.get("fields", {}).get("effective_date", "")).strip()
+        if not effective_date:
+            stale_rules += 1
+            continue
+        try:
+            age_days = (datetime.utcnow().date() - datetime.strptime(effective_date, "%Y-%m-%d").date()).days
+        except ValueError:
+            stale_rules += 1
+            continue
+        if age_days > 365:
+            stale_rules += 1
+    if stale_rules > 0:
+        score += min(20, stale_rules * 4)
+        findings.append(f"{stale_rules} active rule(s) have stale/missing effective date metadata.")
+        actions.append("Review and refresh stale rules to the latest published versions.")
+
+    if not med_logs_today:
+        score += 12
+        findings.append("No medication logs recorded today.")
+        actions.append("Verify medication administration logging is complete.")
+    if not sanitation_today:
+        score += 12
+        findings.append("No sanitation checks recorded today.")
+        actions.append("Run sanitation checklist and log outcomes.")
+    if not sleep_today:
+        score += 12
+        findings.append("No sleep-safety checks recorded today.")
+        actions.append("Run and record sleep-safety checks for infant/toddler rooms.")
+
+    if urgent_subsidies:
+        score += min(12, len(urgent_subsidies) * 4)
+        findings.append(f"{len(urgent_subsidies)} subsidy case(s) flagged urgent.")
+        actions.append("Complete subsidy reauthorization submissions before deadlines.")
+
+    if open_assessments:
+        score += min(15, len(open_assessments) * 3)
+        findings.append(f"{len(open_assessments)} open prior regulatory risk assessment(s).")
+        actions.append("Close or mitigate prior open compliance findings.")
+
+    score = max(0.0, min(score, 100.0))
+    return {
+        "assessed_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "jurisdiction": jurisdiction or "default",
+        "risk_score": round(score, 2),
+        "risk_level": _risk_level_from_score(score),
+        "findings": findings,
+        "recommended_actions": actions,
+        "signals": {
+            "active_rules": len(active_rules),
+            "stale_rules": stale_rules,
+            "medication_logs_today": len(med_logs_today),
+            "sanitation_checks_today": len(sanitation_today),
+            "sleep_safety_checks_today": len(sleep_today),
+            "urgent_subsidies": len(urgent_subsidies),
+            "open_assessments": len(open_assessments),
+        },
+    }
+
+
+def _workflow_heartbeat_payload(data: dict) -> tuple[dict | None, str | None]:
+    """Validate and normalize workflow heartbeat input payload."""
+    workflow_key = str(data.get("workflow_key", "")).strip().lower()
+    workflow_name = str(data.get("workflow_name", "")).strip()
+    if not workflow_key:
+        return None, "workflow_key is required"
+    status = str(data.get("status", "success")).strip().lower() or "success"
+    ran_at_raw = data.get("ran_at")
+    ran_at = _parse_iso_datetime(str(ran_at_raw)) if ran_at_raw else datetime.utcnow()
+    if ran_at is None:
+        return None, "ran_at must be ISO datetime"
+    error_msg = str(data.get("error", "")).strip()
+    fields = {
+        "workflow_name": workflow_name,
+        "last_status": status,
+        "last_run_at": ran_at.isoformat(timespec="seconds"),
+        "updated_at": datetime.utcnow().isoformat(timespec="seconds"),
+    }
+    if status == "success":
+        fields["last_success_at"] = fields["last_run_at"]
+        fields["last_error"] = ""
+    else:
+        fields["last_error"] = error_msg
+    return {"workflow_key": workflow_key, "fields": fields}, None
+
+
+def _compute_workflow_freshness(now: datetime | None = None) -> dict:
+    """Compute stale workflow summary from heartbeat rows and freshness thresholds."""
+    now = now or datetime.utcnow()
+    rows = get_workflow_heartbeats()
+    by_key = {
+        str(row.get("fields", {}).get("workflow_key", "")).strip().lower(): row
+        for row in rows
+    }
+
+    items = []
+    stale_count = 0
+    for workflow_key, threshold_hours in WORKFLOW_FRESHNESS_HOURS.items():
+        row = by_key.get(workflow_key)
+        fields = row.get("fields", {}) if row else {}
+        workflow_name = fields.get("workflow_name") or workflow_key
+        last_status = str(fields.get("last_status", "unknown"))
+        last_run_at = str(fields.get("last_run_at", "")).strip()
+        last_success_at = str(fields.get("last_success_at", "")).strip()
+        age_hours = None
+        stale_reason = ""
+        stale = False
+
+        success_dt = _parse_iso_datetime(last_success_at)
+        if not success_dt:
+            stale = True
+            stale_reason = "no_success_heartbeat"
+        else:
+            if success_dt.tzinfo is not None:
+                success_dt = success_dt.astimezone(tz=None).replace(tzinfo=None)
+            age_hours = round((now - success_dt).total_seconds() / 3600, 2)
+            if age_hours > threshold_hours:
+                stale = True
+                stale_reason = f"stale_over_{threshold_hours}h"
+
+        if stale:
+            stale_count += 1
+
+        items.append({
+            "workflow_key": workflow_key,
+            "workflow_name": workflow_name,
+            "threshold_hours": threshold_hours,
+            "last_status": last_status,
+            "last_run_at": last_run_at,
+            "last_success_at": last_success_at,
+            "age_hours_since_success": age_hours,
+            "stale": stale,
+            "stale_reason": stale_reason,
+            "last_error": str(fields.get("last_error", "")).strip(),
+        })
+
+    return {
+        "checked_at": now.isoformat(timespec="seconds"),
+        "workflow_count": len(items),
+        "stale_count": stale_count,
+        "all_fresh": stale_count == 0,
+        "workflows": items,
+    }
 
 
 def _invoice_balance(invoice_rec: dict) -> dict:
@@ -850,6 +2434,7 @@ def api_pickup_verify():
 
 
 @app.route("/pickup/events", methods=["POST"])
+@idempotent_endpoint
 def api_pickup_event():
     """Create a pickup verification/audit event."""
     data = request.get_json(force=True, silent=True) or {}
@@ -902,6 +2487,14 @@ def api_pickup_event():
 @app.route("/pickup/events", methods=["GET"])
 def api_pickup_events():
     """List pickup events for audit review with optional filters."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "timestamp", "approved", "child", "requested_by_guardian", "approved_by_staff", "method"},
+        default_sort_by="timestamp",
+        default_sort_dir="desc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+
     child_id_val = request.args.get("child_id")
     approved_param = request.args.get("approved")
     approved = None
@@ -921,10 +2514,20 @@ def api_pickup_events():
             continue
         filtered.append({"id": event.get("id"), "fields": fields})
 
-    return jsonify({"count": len(filtered), "events": filtered})
+    sorted_rows = _sort_records(filtered, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
+    return jsonify({
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "events": paged,
+    })
 
 
 @app.route("/billing/invoices/generate", methods=["POST"])
+@idempotent_endpoint
 def api_billing_generate_invoices():
     """Create draft invoices from request payload."""
     data = request.get_json(force=True, silent=True) or {}
@@ -943,10 +2546,15 @@ def api_billing_generate_invoices():
         record = dict(item)
         record["account"] = _to_grist_id(record.get("account"))
         record["total_due"] = _to_float(record.get("total_due"))
-        record.setdefault("status", "issued")
+        record["status"] = str(record.get("status", "issued")).strip().lower()
         record["subtotal"] = _to_float(record.get("subtotal", record.get("total_due")))
         record["subsidy_credit"] = _to_float(record.get("subsidy_credit", 0))
         record["late_fees"] = _to_float(record.get("late_fees", 0))
+        for date_field in ("period_start", "period_end", "due_date"):
+            parsed_date = _parse_iso_date(record.get(date_field))
+            if not parsed_date:
+                return jsonify({"error": f"{date_field} must be ISO date (YYYY-MM-DD)"}), 400
+            record[date_field] = parsed_date
         normalized.append(record)
 
     result = create_invoices(normalized)
@@ -1063,6 +2671,7 @@ def api_billing_invoice_allocate(invoice_id_val):
 
 
 @app.route("/billing/invoices/<invoice_id_val>/autopay/run", methods=["POST"])
+@idempotent_endpoint
 def api_billing_invoice_autopay_run(invoice_id_val):
     """Execute autopay attempts for auto-debit parties on an invoice."""
     invoice = get_invoice(invoice_id_val)
@@ -1164,11 +2773,26 @@ def api_billing_invoice_autopay_run(invoice_id_val):
 @app.route("/billing/invoices/<invoice_id_val>/autopay/attempts", methods=["GET"])
 def api_billing_invoice_autopay_attempts(invoice_id_val):
     """List autopay attempt audit rows for an invoice."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "attempted_at", "status", "amount", "party", "processor_ref"},
+        default_sort_by="attempted_at",
+        default_sort_dir="desc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+
     attempts = get_autopay_attempts(invoice_id_val=invoice_id_val)
+    rows = [{"id": a.get("id"), "fields": a.get("fields", {})} for a in attempts]
+    sorted_rows = _sort_records(rows, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
     return jsonify({
         "invoice_id": invoice_id_val,
-        "count": len(attempts),
-        "attempts": [{"id": a.get("id"), "fields": a.get("fields", {})} for a in attempts],
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "attempts": paged,
     })
 
 
@@ -1278,6 +2902,7 @@ def api_billing_aging():
 
 
 @app.route("/subsidy/claims", methods=["POST"])
+@idempotent_endpoint
 def api_subsidy_claim_create():
     """Create a subsidy claim record."""
     data = request.get_json(force=True, silent=True) or {}
@@ -1314,17 +2939,33 @@ def api_subsidy_claim_create():
 @app.route("/subsidy/claims", methods=["GET"])
 def api_subsidy_claims_list():
     """List subsidy claims with optional month/status/program filters."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "claim_month", "status", "program", "expected_amount", "received_amount", "variance", "submitted_at", "paid_at"},
+        default_sort_by="claim_month",
+        default_sort_dir="desc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+
     claim_month = request.args.get("claim_month")
     status = request.args.get("status")
     program = request.args.get("program")
     claims = get_subsidy_claims(claim_month=claim_month, status=status, program=program)
+    rows = [{"id": c.get("id"), "fields": c.get("fields", {})} for c in claims]
+    sorted_rows = _sort_records(rows, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
     return jsonify({
-        "count": len(claims),
-        "claims": [{"id": c.get("id"), "fields": c.get("fields", {})} for c in claims],
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "claims": paged,
     })
 
 
 @app.route("/subsidy/reconcile/<claim_id_val>", methods=["POST"])
+@idempotent_endpoint
 def api_subsidy_reconcile_claim(claim_id_val):
     """Reconcile a claim by updating received amount and computed variance/status."""
     claims = get_subsidy_claims()
@@ -1417,15 +3058,151 @@ def api_subsidy_reconciliation_summary():
     })
 
 
+@app.route("/compliance/medication-logs", methods=["POST"])
+def api_compliance_add_medication_log():
+    """Create a medication administration log entry."""
+    data = request.get_json(force=True, silent=True) or {}
+    required = {"child", "medication_name", "dosage"}
+    missing = [field for field in required if data.get(field) in (None, "")]
+    if missing:
+        return jsonify({"error": f"missing medication fields: {', '.join(missing)}"}), 400
+
+    administered = _to_bool(data.get("administered", True))
+    administered_by = data.get("administered_by")
+    if administered and administered_by in (None, ""):
+        return jsonify({"error": "administered_by is required when administered is true"}), 400
+
+    payload = {
+        "child": _to_grist_id(data.get("child")),
+        "medication_name": str(data.get("medication_name")),
+        "dosage": str(data.get("dosage")),
+        "administered": administered,
+        "administered_at": data.get("administered_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "administered_by": _to_grist_id(administered_by),
+        "reason": str(data.get("reason", "")),
+        "notes": str(data.get("notes", "")),
+    }
+    result = add_medication_log(payload)
+    if not result:
+        return jsonify({"error": "failed to create medication log"}), 500
+    return jsonify({"status": "created", "log_id": result.get("id")}), 201
+
+
+@app.route("/compliance/medication-logs", methods=["GET"])
+def api_compliance_list_medication_logs():
+    """List medication logs, optionally filtered by child/date."""
+    child_id_val = request.args.get("child_id")
+    day = request.args.get("date")
+    logs = get_medication_logs(child_id_val=child_id_val)
+    logs = _filter_records_by_day(logs, "administered_at", day)
+    return jsonify({"count": len(logs), "logs": [{"id": r.get("id"), "fields": r.get("fields", {})} for r in logs]})
+
+
+@app.route("/compliance/sanitation-checks", methods=["POST"])
+def api_compliance_add_sanitation_check():
+    """Create a sanitation checklist entry."""
+    data = request.get_json(force=True, silent=True) or {}
+    required = {"check_area", "check_item", "status", "checked_by"}
+    missing = [field for field in required if data.get(field) in (None, "")]
+    if missing:
+        return jsonify({"error": f"missing sanitation fields: {', '.join(missing)}"}), 400
+
+    status = str(data.get("status", "")).strip().lower()
+    if status not in SANITATION_STATUSES:
+        return jsonify({"error": "invalid status", "allowed_statuses": sorted(SANITATION_STATUSES)}), 400
+
+    payload = {
+        "check_area": str(data.get("check_area")),
+        "check_item": str(data.get("check_item")),
+        "status": status,
+        "checked_at": data.get("checked_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "checked_by": _to_grist_id(data.get("checked_by")),
+        "notes": str(data.get("notes", "")),
+    }
+    result = add_sanitation_check(payload)
+    if not result:
+        return jsonify({"error": "failed to create sanitation check"}), 500
+    return jsonify({"status": "created", "check_id": result.get("id")}), 201
+
+
+@app.route("/compliance/sanitation-checks", methods=["GET"])
+def api_compliance_list_sanitation_checks():
+    """List sanitation checks, optionally filtered by status/date."""
+    status = request.args.get("status")
+    day = request.args.get("date")
+    checks = get_sanitation_checks(status=status)
+    checks = _filter_records_by_day(checks, "checked_at", day)
+    return jsonify({"count": len(checks), "checks": [{"id": r.get("id"), "fields": r.get("fields", {})} for r in checks]})
+
+
+@app.route("/compliance/sleep-safety-checks", methods=["POST"])
+def api_compliance_add_sleep_safety_check():
+    """Create a sleep safety checklist entry."""
+    data = request.get_json(force=True, silent=True) or {}
+    required = {"child", "status", "checked_by"}
+    missing = [field for field in required if data.get(field) in (None, "")]
+    if missing:
+        return jsonify({"error": f"missing sleep safety fields: {', '.join(missing)}"}), 400
+
+    status = str(data.get("status", "")).strip().lower()
+    if status not in SLEEP_SAFETY_STATUSES:
+        return jsonify({"error": "invalid status", "allowed_statuses": sorted(SLEEP_SAFETY_STATUSES)}), 400
+
+    payload = {
+        "child": _to_grist_id(data.get("child")),
+        "status": status,
+        "check_time": data.get("check_time") or datetime.utcnow().isoformat(timespec="seconds"),
+        "checked_by": _to_grist_id(data.get("checked_by")),
+        "notes": str(data.get("notes", "")),
+    }
+    result = add_sleep_safety_check(payload)
+    if not result:
+        return jsonify({"error": "failed to create sleep safety check"}), 500
+    return jsonify({"status": "created", "check_id": result.get("id")}), 201
+
+
+@app.route("/compliance/sleep-safety-checks", methods=["GET"])
+def api_compliance_list_sleep_safety_checks():
+    """List sleep safety checks, optionally filtered by child/status/date."""
+    child_id_val = request.args.get("child_id")
+    status = request.args.get("status")
+    day = request.args.get("date")
+    checks = get_sleep_safety_checks(child_id_val=child_id_val, status=status)
+    checks = _filter_records_by_day(checks, "check_time", day)
+    return jsonify({"count": len(checks), "checks": [{"id": r.get("id"), "fields": r.get("fields", {})} for r in checks]})
+
+
 @app.route("/waitlist", methods=["GET"])
 def api_waitlist():
     """Return waitlist entries, optionally filtered by status."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "status", "desired_start_date", "next_follow_up_at", "last_contact_at", "priority_score", "conversion_score", "retention_risk_score"},
+        default_sort_by="id",
+        default_sort_dir="asc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+
     status = request.args.get("status")
     entries = get_waitlist(status=status)
-    return jsonify({"count": len(entries), "entries": [{"id": e.get("id"), "fields": e.get("fields", {})} for e in entries]})
+    due_only = _to_bool(request.args.get("followup_due", False))
+    if due_only:
+        entries = _waitlist_followup_due_entries(entries)
+    rows = [{"id": e.get("id"), "fields": e.get("fields", {})} for e in entries]
+    sorted_rows = _sort_records(rows, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
+    return jsonify({
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "entries": paged,
+    })
 
 
 @app.route("/waitlist", methods=["POST"])
+@idempotent_endpoint
 def api_waitlist_add():
     """Create a waitlist entry."""
     data = request.get_json(force=True, silent=True) or {}
@@ -1436,6 +3213,20 @@ def api_waitlist_add():
 
     data.setdefault("priority_score", 0)
     data["priority_score"] = _to_float(data.get("priority_score", 0))
+    status = str(data.get("status", "new")).strip().lower()
+    desired_start_date = _parse_iso_date(data.get("desired_start_date"))
+    if not desired_start_date:
+        return jsonify({"error": "desired_start_date must be ISO date (YYYY-MM-DD)"}), 400
+    sla_hours = _to_float(data.get("follow_up_sla_hours", WAITLIST_SLA_HOURS.get(status, 48)))
+    now_iso = datetime.utcnow().isoformat(timespec="seconds")
+    data["desired_start_date"] = desired_start_date
+    data["status"] = status
+    data["follow_up_sla_hours"] = sla_hours
+    data.setdefault("last_contact_at", now_iso)
+    if data.get("next_follow_up_at") in (None, ""):
+        data["next_follow_up_at"] = (datetime.utcnow() + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
+    data.setdefault("conversion_score", _to_float(data.get("priority_score", 0)))
+    data.setdefault("retention_risk_score", _to_float(data.get("retention_risk_score", 0)))
     result = add_waitlist_entry(data)
     if not result:
         return jsonify({"error": "failed to create waitlist entry"}), 500
@@ -1448,10 +3239,60 @@ def api_waitlist_patch(entry_id_val):
     data = request.get_json(force=True, silent=True) or {}
     if not isinstance(data, dict) or not data:
         return jsonify({"error": "fields object required"}), 400
+    if "follow_up_sla_hours" in data:
+        data["follow_up_sla_hours"] = _to_float(data.get("follow_up_sla_hours"))
+    if "conversion_score" in data:
+        data["conversion_score"] = _to_float(data.get("conversion_score"))
+    if "retention_risk_score" in data:
+        data["retention_risk_score"] = _to_float(data.get("retention_risk_score"))
+    if "status" in data:
+        data["status"] = str(data.get("status", "")).strip().lower()
     result = update_waitlist_entry(entry_id_val, data)
     if result is None:
         return jsonify({"error": "failed to update waitlist entry"}), 500
     return jsonify({"status": "updated", "entry_id": entry_id_val})
+
+
+@app.route("/waitlist/<entry_id_val>/automation-action", methods=["POST"])
+def api_waitlist_automation_action(entry_id_val):
+    """Apply a validated automation action patch to a waitlist entry."""
+    entries = get_waitlist()
+    entry = next((item for item in entries if str(item.get("id")) == str(entry_id_val)), None)
+    if not entry:
+        return jsonify({"error": "waitlist entry not found"}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    action_key = str(data.get("action_key", "")).strip().lower()
+    if not action_key:
+        return jsonify({"error": "action_key is required"}), 400
+
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    patch = {
+        "automation_last_action": action_key,
+        "automation_last_action_at": now,
+        "automation_escalated": _to_bool(data.get("escalate", False)),
+        "automation_escalated_at": now if _to_bool(data.get("escalate", False)) else "",
+        "automation_escalation_reason": str(data.get("escalation_reason", "")),
+        "automation_nudge_sent_at": now if _to_bool(data.get("nudge_sent", False)) else "",
+    }
+
+    if "follow_up_sla_hours" in data:
+        sla_hours = _to_float(data.get("follow_up_sla_hours"))
+        patch["follow_up_sla_hours"] = sla_hours
+        if not data.get("next_follow_up_at"):
+            patch["next_follow_up_at"] = (datetime.utcnow() + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
+
+    if "next_follow_up_at" in data and data.get("next_follow_up_at"):
+        next_follow_up_raw = str(data.get("next_follow_up_at"))
+        next_follow_up = _parse_iso_datetime(next_follow_up_raw)
+        if not next_follow_up:
+            return jsonify({"error": "next_follow_up_at must be ISO datetime"}), 400
+        patch["next_follow_up_at"] = next_follow_up.isoformat(timespec="seconds")
+
+    result = update_waitlist_entry(entry_id_val, patch)
+    if result is None:
+        return jsonify({"error": "failed to apply automation action"}), 500
+    return jsonify({"status": "updated", "entry_id": entry_id_val, "action_key": action_key, "fields": patch})
 
 
 @app.route("/waitlist/<entry_id_val>/advance", methods=["POST"])
@@ -1465,20 +3306,832 @@ def api_waitlist_advance(entry_id_val):
     data = request.get_json(force=True, silent=True) or {}
     target_status = data.get("status")
     if target_status:
-        new_status = str(target_status)
+        new_status = str(target_status).strip().lower()
     else:
-        flow = ["new", "contacted", "tour_scheduled", "offered", "enrolled"]
         current = str(entry["fields"].get("status", "new")).lower()
-        if current in flow and current != flow[-1]:
-            new_status = flow[flow.index(current) + 1]
+        if current in WAITLIST_FLOW and current != WAITLIST_FLOW[-1]:
+            new_status = WAITLIST_FLOW[WAITLIST_FLOW.index(current) + 1]
         else:
             new_status = current
 
-    patch = {"status": new_status, "last_contact_at": datetime.utcnow().isoformat(timespec="seconds")}
+    now = datetime.utcnow()
+    sla_hours = _to_float(data.get("follow_up_sla_hours", entry.get("fields", {}).get("follow_up_sla_hours", WAITLIST_SLA_HOURS.get(new_status, 48))))
+    patch = {
+        "status": new_status,
+        "last_contact_at": now.isoformat(timespec="seconds"),
+        "follow_up_sla_hours": sla_hours,
+        "next_follow_up_at": (now + timedelta(hours=sla_hours)).isoformat(timespec="seconds"),
+    }
+    if "retention_risk_score" in data:
+        patch["retention_risk_score"] = _to_float(data.get("retention_risk_score"))
     result = update_waitlist_entry(entry_id_val, patch)
     if result is None:
         return jsonify({"error": "failed to advance waitlist entry"}), 500
     return jsonify({"status": "advanced", "entry_id": entry_id_val, "new_status": new_status})
+
+
+@app.route("/waitlist/<entry_id_val>/schedule-tour", methods=["POST"])
+def api_waitlist_schedule_tour(entry_id_val):
+    """Schedule a waitlist tour and set follow-up SLA."""
+    entries = get_waitlist()
+    entry = next((item for item in entries if str(item.get("id")) == str(entry_id_val)), None)
+    if not entry:
+        return jsonify({"error": "waitlist entry not found"}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    tour_date = data.get("tour_date")
+    if not tour_date:
+        return jsonify({"error": "tour_date is required"}), 400
+    sla_hours = _to_float(data.get("follow_up_sla_hours", WAITLIST_SLA_HOURS.get("tour_scheduled", 24)))
+    next_follow_up_at = data.get("next_follow_up_at")
+    if not next_follow_up_at:
+        tour_dt = _parse_iso_datetime(str(tour_date))
+        if not tour_dt:
+            return jsonify({"error": "tour_date must be ISO datetime"}), 400
+        next_follow_up_at = (tour_dt + timedelta(hours=sla_hours)).isoformat(timespec="seconds")
+
+    patch = {
+        "status": "tour_scheduled",
+        "tour_date": str(tour_date),
+        "follow_up_sla_hours": sla_hours,
+        "last_contact_at": datetime.utcnow().isoformat(timespec="seconds"),
+        "next_follow_up_at": str(next_follow_up_at),
+    }
+    result = update_waitlist_entry(entry_id_val, patch)
+    if result is None:
+        return jsonify({"error": "failed to schedule tour"}), 500
+    return jsonify({"status": "scheduled", "entry_id": entry_id_val, "tour_date": patch["tour_date"], "next_follow_up_at": patch["next_follow_up_at"]})
+
+
+@app.route("/waitlist/followups/due", methods=["GET"])
+def api_waitlist_followups_due():
+    """Return waitlist entries with due follow-ups."""
+    due = _waitlist_followup_due_entries(get_waitlist())
+    return jsonify({"count": len(due), "entries": [{"id": e.get("id"), "fields": e.get("fields", {})} for e in due]})
+
+
+@app.route("/waitlist/scoring/run", methods=["POST"])
+def api_waitlist_scoring_run():
+    """Compute conversion/risk scores for waitlist entries; optionally persist."""
+    data = request.get_json(force=True, silent=True) or {}
+    persist = _to_bool(data.get("persist", False))
+    open_only = _to_bool(data.get("open_only", False))
+    now = datetime.utcnow()
+    open_stages = {"new", "contacted", "tour_scheduled", "offered"}
+
+    entries = get_waitlist()
+    results = []
+    updated_count = 0
+    errors = []
+    risk_buckets = {"low": 0, "medium": 0, "high": 0}
+    conversion_buckets = {"low": 0, "medium": 0, "high": 0}
+
+    for entry in entries:
+        fields = entry.get("fields", {})
+        status = str(fields.get("status", "new")).strip().lower()
+        if open_only and status not in open_stages:
+            continue
+
+        conversion_score, retention_risk_score, conversion_reasons, risk_reasons = _waitlist_score_entry(fields, now)
+        if conversion_score >= 70:
+            conversion_buckets["high"] += 1
+        elif conversion_score >= 40:
+            conversion_buckets["medium"] += 1
+        else:
+            conversion_buckets["low"] += 1
+
+        if retention_risk_score >= 70:
+            risk_buckets["high"] += 1
+        elif retention_risk_score >= 40:
+            risk_buckets["medium"] += 1
+        else:
+            risk_buckets["low"] += 1
+
+        if persist:
+            patch = {
+                "conversion_score": conversion_score,
+                "retention_risk_score": retention_risk_score,
+            }
+            updated = update_waitlist_entry(entry.get("id"), patch)
+            if updated is None:
+                errors.append({"entry_id": entry.get("id"), "error": "failed to update score fields"})
+            else:
+                updated_count += 1
+
+        scored_fields = dict(fields)
+        scored_fields["conversion_score"] = conversion_score
+        scored_fields["retention_risk_score"] = retention_risk_score
+        scored_fields["conversion_reason_codes"] = ",".join(conversion_reasons)
+        scored_fields["risk_reason_codes"] = ",".join(risk_reasons)
+        results.append({"id": entry.get("id"), "fields": scored_fields})
+
+    status = "ok" if not errors else ("partial" if results else "error")
+    code = 200 if status != "error" else 500
+    return jsonify({
+        "status": status,
+        "persist": persist,
+        "open_only": open_only,
+        "count": len(results),
+        "updated_count": updated_count,
+        "risk_buckets": risk_buckets,
+        "conversion_buckets": conversion_buckets,
+        "entries": results,
+        "errors": errors,
+        "ran_at": now.isoformat(timespec="seconds"),
+    }), code
+
+
+@app.route("/waitlist/pipeline/summary", methods=["GET"])
+def api_waitlist_pipeline_summary():
+    """Return waitlist pipeline, conversion, SLA, and retention-risk summary."""
+    entries = get_waitlist()
+    stage_counts = {stage: 0 for stage in WAITLIST_FLOW}
+    stage_counts["other"] = 0
+    risk_buckets = {"low": 0, "medium": 0, "high": 0}
+    conversion_buckets = {"low": 0, "medium": 0, "high": 0}
+    stale_stage_counts = {"new": 0, "contacted": 0, "tour_scheduled": 0, "offered": 0}
+    source_counts: dict[str, int] = {}
+    total = len(entries)
+    now = datetime.utcnow()
+
+    for entry in entries:
+        fields = entry.get("fields", {})
+        status = str(fields.get("status", "new")).strip().lower()
+        if status in stage_counts:
+            stage_counts[status] += 1
+        else:
+            stage_counts["other"] += 1
+
+        risk = _to_float(fields.get("retention_risk_score", 0))
+        if risk >= 70:
+            risk_buckets["high"] += 1
+        elif risk >= 40:
+            risk_buckets["medium"] += 1
+        else:
+            risk_buckets["low"] += 1
+
+        conversion = _to_float(fields.get("conversion_score", 0))
+        if conversion >= 70:
+            conversion_buckets["high"] += 1
+        elif conversion >= 40:
+            conversion_buckets["medium"] += 1
+        else:
+            conversion_buckets["low"] += 1
+
+        source = str(fields.get("source", "")).strip().lower()
+        if source:
+            source_counts[source] = source_counts.get(source, 0) + 1
+
+        last_contact = _parse_iso_datetime(fields.get("last_contact_at"))
+        contact_age_hours = ((now - last_contact).total_seconds() / 3600.0) if last_contact else None
+        tour_dt = _parse_iso_datetime(fields.get("tour_date"))
+        if status == "new" and contact_age_hours is not None and contact_age_hours > 48:
+            stale_stage_counts["new"] += 1
+        elif status == "contacted" and contact_age_hours is not None and contact_age_hours > 72:
+            stale_stage_counts["contacted"] += 1
+        elif status == "offered" and contact_age_hours is not None and contact_age_hours > 72:
+            stale_stage_counts["offered"] += 1
+        elif status == "tour_scheduled" and tour_dt and (now - tour_dt).total_seconds() / 3600.0 > 2:
+            stale_stage_counts["tour_scheduled"] += 1
+
+    offered = stage_counts.get("offered", 0)
+    enrolled = stage_counts.get("enrolled", 0)
+    conversion_rate_pct = round((enrolled / offered) * 100, 2) if offered > 0 else 0.0
+    due_entries = _waitlist_followup_due_entries(entries)
+    due_followups_by_stage = {"new": 0, "contacted": 0, "tour_scheduled": 0, "offered": 0, "other": 0}
+    for due in due_entries:
+        due_status = str(due.get("fields", {}).get("status", "")).strip().lower()
+        if due_status in due_followups_by_stage:
+            due_followups_by_stage[due_status] += 1
+        else:
+            due_followups_by_stage["other"] += 1
+
+    return jsonify({
+        "total": total,
+        "stage_counts": stage_counts,
+        "conversion_rate_pct": conversion_rate_pct,
+        "followups_due_count": len(due_entries),
+        "followups_due_by_stage": due_followups_by_stage,
+        "retention_risk_buckets": risk_buckets,
+        "conversion_score_buckets": conversion_buckets,
+        "stale_stage_counts": stale_stage_counts,
+        "top_sources": sorted(source_counts.items(), key=lambda kv: kv[1], reverse=True)[:5],
+    })
+
+
+@app.route("/forecast/assumptions", methods=["GET"])
+def api_forecast_assumptions():
+    """Return explicit forecasting assumptions used by automation/reporting."""
+    operating_cost = _to_float(os.getenv("FORECAST_OPERATING_COST", "0"))
+    if operating_cost <= 0:
+        operating_cost = _to_float(os.getenv("BREAKEVEN_MONTHLY_COST", "0"))
+
+    avg_rev_per_child = _to_float(os.getenv("AVG_MONTHLY_REVENUE_PER_CHILD", "0"))
+    licensed_capacity = _to_float(os.getenv("FORECAST_LICENSED_CAPACITY", "0"))
+    if licensed_capacity <= 0:
+        rooms = get_room_ratios()
+        licensed_capacity = sum(_to_float(r.get("fields", {}).get("max_children", 0)) for r in rooms)
+
+    return jsonify({
+        "operating_cost": operating_cost,
+        "avg_revenue_per_child": avg_rev_per_child,
+        "licensed_capacity": licensed_capacity,
+        "source": {
+            "operating_cost": "FORECAST_OPERATING_COST|BREAKEVEN_MONTHLY_COST",
+            "avg_revenue_per_child": "AVG_MONTHLY_REVENUE_PER_CHILD",
+            "licensed_capacity": "FORECAST_LICENSED_CAPACITY|Room_Ratios.max_children",
+        },
+    })
+
+
+@app.route("/regulatory/rules", methods=["GET"])
+def api_regulatory_rules_list():
+    """List regulatory rules with optional filters."""
+    jurisdiction = request.args.get("jurisdiction")
+    category = request.args.get("category")
+    rule_key = request.args.get("rule_key")
+    include_inactive = _to_bool(request.args.get("include_inactive", False))
+    query = str(request.args.get("q", "")).strip().lower()
+    rules = get_regulatory_rules(
+        rule_key=rule_key,
+        jurisdiction=jurisdiction,
+        category=category,
+        active_only=not include_inactive,
+    )
+    if query:
+        filtered = []
+        for row in rules:
+            fields = row.get("fields", {})
+            haystack = " ".join(
+                str(fields.get(key, ""))
+                for key in ("rule_key", "title", "category", "jurisdiction", "summary", "rule_text", "keywords")
+            ).lower()
+            if query in haystack:
+                filtered.append(row)
+        rules = filtered
+    return jsonify({"count": len(rules), "rules": [{"id": r.get("id"), "fields": r.get("fields", {})} for r in rules]})
+
+
+@app.route("/regulatory/rules/<rule_key>/versions", methods=["GET"])
+def api_regulatory_rule_versions(rule_key):
+    """Return all versions of a regulatory rule key."""
+    versions = get_regulatory_rule_versions(rule_key)
+    return jsonify({
+        "rule_key": rule_key,
+        "count": len(versions),
+        "versions": [{"id": row.get("id"), "fields": row.get("fields", {})} for row in versions],
+    })
+
+
+@app.route("/regulatory/rules/ingest", methods=["POST"])
+def api_regulatory_rules_ingest():
+    """Ingest one or many versioned regulatory rules with active-version traceability."""
+    data = request.get_json(force=True, silent=True) or {}
+    rules = data.get("rules")
+    if rules is None:
+        rules = [data] if data else []
+    if not isinstance(rules, list) or not rules:
+        return jsonify({"error": "rules array is required"}), 400
+
+    ingest_batch_id = str(data.get("ingest_batch_id") or datetime.utcnow().strftime("batch-%Y%m%d%H%M%S"))
+    deactivate_previous = _to_bool(data.get("deactivate_previous", True))
+    dry_run = _to_bool(data.get("dry_run", False))
+
+    created = 0
+    updated = 0
+    errors = []
+    items = []
+
+    for idx, raw in enumerate(rules):
+        if not isinstance(raw, dict):
+            errors.append({"index": idx, "error": "rule item must be object"})
+            continue
+        fields, error = _normalize_regulatory_rule_payload(raw, ingest_batch_id)
+        if error or not fields:
+            errors.append({"index": idx, "error": error or "invalid payload"})
+            continue
+
+        existing_version = find_regulatory_rule_version(fields["rule_key"], fields["version"])
+        versions = get_regulatory_rule_versions(fields["rule_key"])
+        prior_active = next((row for row in versions if bool(row.get("fields", {}).get("active"))), None)
+        if prior_active and str(prior_active.get("fields", {}).get("version")) != str(fields["version"]):
+            fields["supersedes_version"] = str(prior_active.get("fields", {}).get("version", ""))
+
+        if dry_run:
+            action = "update" if existing_version else "create"
+            items.append({"rule_key": fields["rule_key"], "version": fields["version"], "action": action})
+            continue
+
+        if existing_version:
+            result = update_regulatory_rule(existing_version.get("id"), fields)
+            if result is None:
+                errors.append({"index": idx, "error": "failed to update rule"})
+                continue
+            target_id = existing_version.get("id")
+            updated += 1
+            action = "updated"
+        else:
+            result = create_regulatory_rule(fields)
+            if not result:
+                errors.append({"index": idx, "error": "failed to create rule"})
+                continue
+            target_id = result.get("id")
+            created += 1
+            action = "created"
+
+        if deactivate_previous and fields.get("active"):
+            for row in versions:
+                if str(row.get("id")) == str(target_id):
+                    continue
+                if bool(row.get("fields", {}).get("active")):
+                    update_regulatory_rule(row.get("id"), {"active": False})
+
+        items.append({"rule_key": fields["rule_key"], "version": fields["version"], "action": action, "id": target_id})
+
+    status = "ok" if not errors else ("partial" if items else "error")
+    code = 200 if status != "error" else 400
+    return jsonify({
+        "status": status,
+        "ingest_batch_id": ingest_batch_id,
+        "dry_run": dry_run,
+        "created": created,
+        "updated": updated,
+        "processed": len(items),
+        "errors": errors,
+        "items": items,
+    }), code
+
+
+@app.route("/regulatory/ask", methods=["GET"])
+def api_regulatory_ask():
+    """Answer a regulatory question using ingested rules first, then static fallback."""
+    query = str(request.args.get("q", "")).strip()
+    if not query:
+        return jsonify({"error": "q is required"}), 400
+    jurisdiction = request.args.get("jurisdiction")
+    dynamic_rules = get_regulatory_rules(jurisdiction=jurisdiction, active_only=True)
+    answer = get_regulatory_answer(query, dynamic_rules=dynamic_rules)
+    if not answer:
+        return jsonify({"status": "no_match", "answer": None}), 404
+    return jsonify({"status": "ok", "answer": answer, "dynamic_rule_count": len(dynamic_rules)})
+
+
+@app.route("/regulatory/audit/risk-summary", methods=["GET"])
+def api_regulatory_audit_risk_summary():
+    """Compute and return regulatory audit risk snapshot."""
+    jurisdiction = request.args.get("jurisdiction")
+    snapshot = _compute_regulatory_risk_snapshot(jurisdiction=jurisdiction)
+    return jsonify(snapshot)
+
+
+@app.route("/regulatory/audit/risk-assessments", methods=["GET"])
+def api_regulatory_audit_risk_assessments():
+    """List persisted regulatory risk assessments."""
+    status = request.args.get("status")
+    category = request.args.get("category")
+    rows = get_regulatory_risk_assessments(status=status, category=category)
+    return jsonify({
+        "count": len(rows),
+        "assessments": [{"id": row.get("id"), "fields": row.get("fields", {})} for row in rows],
+    })
+
+
+@app.route("/regulatory/audit/risk-assessments/run", methods=["POST"])
+def api_regulatory_audit_risk_assessment_run():
+    """Compute and persist a regulatory risk assessment row."""
+    data = request.get_json(force=True, silent=True) or {}
+    jurisdiction = data.get("jurisdiction")
+    category = str(data.get("category", "overall")).strip()
+    status = str(data.get("status", "open")).strip().lower()
+    snapshot = _compute_regulatory_risk_snapshot(jurisdiction=jurisdiction)
+    fields = {
+        "assessed_at": snapshot["assessed_at"],
+        "jurisdiction": snapshot["jurisdiction"],
+        "category": category,
+        "status": status,
+        "risk_score": snapshot["risk_score"],
+        "risk_level": snapshot["risk_level"],
+        "rule_keys": ",".join(sorted({
+            str(row.get("fields", {}).get("rule_key", "")).strip()
+            for row in get_regulatory_rules(jurisdiction=jurisdiction, active_only=True)
+            if str(row.get("fields", {}).get("rule_key", "")).strip()
+        })),
+        "findings": " | ".join(snapshot["findings"]),
+        "recommended_actions": " | ".join(snapshot["recommended_actions"]),
+    }
+    result = create_regulatory_risk_assessment(fields)
+    if not result:
+        return jsonify({"error": "failed to persist regulatory risk assessment", "snapshot": snapshot}), 500
+    return jsonify({"status": "created", "assessment_id": result.get("id"), "snapshot": snapshot}), 201
+
+
+@app.route("/ops/workflows/heartbeat", methods=["POST"])
+def api_ops_workflow_heartbeat():
+    """Record (upsert) workflow run heartbeat keyed by workflow_key."""
+    data = request.get_json(force=True, silent=True) or {}
+    payload, error = _workflow_heartbeat_payload(data)
+    if error or not payload:
+        return jsonify({"error": error or "invalid payload"}), 400
+    result = upsert_workflow_heartbeat(payload["workflow_key"], payload["fields"])
+    if result is None:
+        return jsonify({"error": "failed to persist workflow heartbeat"}), 500
+    return jsonify({
+        "status": "ok",
+        "workflow_key": payload["workflow_key"],
+        "last_status": payload["fields"].get("last_status"),
+        "last_run_at": payload["fields"].get("last_run_at"),
+        "last_success_at": payload["fields"].get("last_success_at", ""),
+    })
+
+
+@app.route("/ops/workflows/freshness", methods=["GET"])
+def api_ops_workflows_freshness():
+    """Return freshness status for critical automated workflows."""
+    return jsonify(_compute_workflow_freshness())
+
+
+@app.route("/marketing/leads", methods=["POST"])
+def api_marketing_leads_create():
+    """Create a marketing lead row."""
+    data = request.get_json(force=True, silent=True) or {}
+    status = str(data.get("status", "new")).strip().lower()
+    if status not in MARKETING_LEAD_STATUSES:
+        return jsonify({"error": "invalid lead status", "allowed_statuses": sorted(MARKETING_LEAD_STATUSES)}), 400
+    payload = {
+        "family_name": str(data.get("family_name", "")).strip(),
+        "email": str(data.get("email", "")).strip(),
+        "phone": str(data.get("phone", "")).strip(),
+        "child_age_group": str(data.get("child_age_group", "")).strip(),
+        "channel": str(data.get("channel", "")).strip().lower(),
+        "campaign": str(data.get("campaign", "")).strip(),
+        "status": status,
+        "inquiry_date": data.get("inquiry_date") or datetime.utcnow().isoformat(timespec="seconds"),
+        "notes": str(data.get("notes", "")).strip(),
+    }
+    result = create_marketing_lead(payload)
+    if not result:
+        return jsonify({"error": "failed to create marketing lead"}), 500
+    return jsonify({"status": "created", "lead_id": result.get("id")}), 201
+
+
+@app.route("/marketing/leads", methods=["GET"])
+def api_marketing_leads_list():
+    """List marketing leads with optional channel/status filters."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "inquiry_date", "status", "channel", "campaign", "family_name"},
+        default_sort_by="inquiry_date",
+        default_sort_dir="desc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+    channel = request.args.get("channel")
+    status = request.args.get("status")
+    leads = get_marketing_leads(channel=channel, status=status)
+    rows = [{"id": row.get("id"), "fields": row.get("fields", {})} for row in leads]
+    sorted_rows = _sort_records(rows, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
+    return jsonify({
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "leads": paged,
+    })
+
+
+@app.route("/marketing/reviews", methods=["POST"])
+def api_marketing_reviews_create():
+    """Create a parent review request/event row."""
+    data = request.get_json(force=True, silent=True) or {}
+    platform = str(data.get("platform", "other")).strip().lower()
+    status = str(data.get("status", "pending")).strip().lower()
+    if platform not in REVIEW_PLATFORMS:
+        return jsonify({"error": "invalid review platform", "allowed_platforms": sorted(REVIEW_PLATFORMS)}), 400
+    if status not in REVIEW_STATUSES:
+        return jsonify({"error": "invalid review status", "allowed_statuses": sorted(REVIEW_STATUSES)}), 400
+    payload = {
+        "family_name": str(data.get("family_name", "")).strip(),
+        "platform": platform,
+        "status": status,
+        "rating": _to_float(data.get("rating")) if data.get("rating") not in (None, "") else None,
+        "requested_at": data.get("requested_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "received_at": data.get("received_at"),
+        "review_url": str(data.get("review_url", "")).strip(),
+        "notes": str(data.get("notes", "")).strip(),
+    }
+    result = create_review_request(payload)
+    if not result:
+        return jsonify({"error": "failed to create review request"}), 500
+    return jsonify({"status": "created", "review_request_id": result.get("id")}), 201
+
+
+@app.route("/marketing/reviews", methods=["GET"])
+def api_marketing_reviews_list():
+    """List review requests/events with optional platform/status filters."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "requested_at", "received_at", "status", "platform", "rating", "family_name"},
+        default_sort_by="requested_at",
+        default_sort_dir="desc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+    platform = request.args.get("platform")
+    status = request.args.get("status")
+    rows = get_review_requests(platform=platform, status=status)
+    records = [{"id": row.get("id"), "fields": row.get("fields", {})} for row in rows]
+    sorted_rows = _sort_records(records, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
+    return jsonify({
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "reviews": paged,
+    })
+
+
+@app.route("/marketing/insurance/policies", methods=["POST"])
+def api_marketing_insurance_policies_create():
+    """Create an insurance policy tracking row."""
+    data = request.get_json(force=True, silent=True) or {}
+    status = str(data.get("status", "active")).strip().lower()
+    if status not in INSURANCE_POLICY_STATUSES:
+        return jsonify({"error": "invalid insurance status", "allowed_statuses": sorted(INSURANCE_POLICY_STATUSES)}), 400
+
+    effective_date = _parse_iso_date(data.get("effective_date"))
+    expiration_date = _parse_iso_date(data.get("expiration_date"))
+    payload = {
+        "policy_type": str(data.get("policy_type", "")).strip(),
+        "carrier": str(data.get("carrier", "")).strip(),
+        "policy_number": str(data.get("policy_number", "")).strip(),
+        "coverage_amount": _to_float(data.get("coverage_amount")),
+        "effective_date": effective_date,
+        "expiration_date": expiration_date,
+        "status": status,
+        "renewal_contact": str(data.get("renewal_contact", "")).strip(),
+        "notes": str(data.get("notes", "")).strip(),
+    }
+    result = create_insurance_policy(payload)
+    if not result:
+        return jsonify({"error": "failed to create insurance policy"}), 500
+    return jsonify({"status": "created", "policy_id": result.get("id")}), 201
+
+
+@app.route("/marketing/insurance/policies/<policy_id_val>", methods=["PATCH"])
+def api_marketing_insurance_policies_patch(policy_id_val):
+    """Patch an insurance policy tracking row."""
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict) or not data:
+        return jsonify({"error": "fields object required"}), 400
+    patch = dict(data)
+    if "status" in patch:
+        patch["status"] = str(patch.get("status", "")).strip().lower()
+        if patch["status"] not in INSURANCE_POLICY_STATUSES:
+            return jsonify({"error": "invalid insurance status", "allowed_statuses": sorted(INSURANCE_POLICY_STATUSES)}), 400
+    if "coverage_amount" in patch:
+        patch["coverage_amount"] = _to_float(patch.get("coverage_amount"))
+    if "effective_date" in patch:
+        parsed = _parse_iso_date(patch.get("effective_date"))
+        if patch.get("effective_date") not in (None, "") and not parsed:
+            return jsonify({"error": "effective_date must be ISO date (YYYY-MM-DD)"}), 400
+        patch["effective_date"] = parsed
+    if "expiration_date" in patch:
+        parsed = _parse_iso_date(patch.get("expiration_date"))
+        if patch.get("expiration_date") not in (None, "") and not parsed:
+            return jsonify({"error": "expiration_date must be ISO date (YYYY-MM-DD)"}), 400
+        patch["expiration_date"] = parsed
+    result = update_insurance_policy(policy_id_val, patch)
+    if result is None:
+        return jsonify({"error": "failed to update insurance policy"}), 500
+    return jsonify({"status": "updated", "policy_id": policy_id_val, "fields": patch})
+
+
+@app.route("/marketing/insurance/policies", methods=["GET"])
+def api_marketing_insurance_policies_list():
+    """List insurance policies with optional status filter."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "effective_date", "expiration_date", "status", "carrier", "policy_type"},
+        default_sort_by="expiration_date",
+        default_sort_dir="asc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+    status = request.args.get("status")
+    rows = get_insurance_policies(status=status)
+    records = [{"id": row.get("id"), "fields": row.get("fields", {})} for row in rows]
+    sorted_rows = _sort_records(records, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
+    return jsonify({
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "policies": paged,
+    })
+
+
+@app.route("/marketing/competitors/snapshots", methods=["POST"])
+def api_marketing_competitor_snapshots_create():
+    """Create a competitive positioning snapshot row."""
+    data = request.get_json(force=True, silent=True) or {}
+    payload = {
+        "competitor_name": str(data.get("competitor_name", "")).strip(),
+        "location": str(data.get("location", "")).strip(),
+        "tuition_band": str(data.get("tuition_band", "")).strip(),
+        "capacity_estimate": _to_float(data.get("capacity_estimate")),
+        "waitlist_estimate": _to_float(data.get("waitlist_estimate")),
+        "source_url": str(data.get("source_url", "")).strip(),
+        "captured_at": data.get("captured_at") or datetime.utcnow().isoformat(timespec="seconds"),
+        "notes": str(data.get("notes", "")).strip(),
+    }
+    result = create_competitor_snapshot(payload)
+    if not result:
+        return jsonify({"error": "failed to create competitor snapshot"}), 500
+    return jsonify({"status": "created", "snapshot_id": result.get("id")}), 201
+
+
+@app.route("/marketing/competitors/snapshots", methods=["GET"])
+def api_marketing_competitor_snapshots_list():
+    """List competitor snapshots with optional competitor filter."""
+    controls, errors = _parse_list_controls(
+        allowed_sort_fields={"id", "captured_at", "competitor_name", "location", "waitlist_estimate", "capacity_estimate"},
+        default_sort_by="captured_at",
+        default_sort_dir="desc",
+    )
+    if errors or not controls:
+        return _validation_error_response(errors)
+    competitor_name = request.args.get("competitor_name")
+    rows = get_competitor_snapshots(competitor_name=competitor_name)
+    records = [{"id": row.get("id"), "fields": row.get("fields", {})} for row in rows]
+    sorted_rows = _sort_records(records, sort_by=controls["sort_by"], sort_dir=controls["sort_dir"])
+    paged = _paginate_records(sorted_rows, limit=controls["limit"], offset=controls["offset"])
+    return jsonify({
+        "count": len(sorted_rows),
+        "limit": controls["limit"],
+        "offset": controls["offset"],
+        "sort_by": controls["sort_by"],
+        "sort_dir": controls["sort_dir"],
+        "snapshots": paged,
+    })
+
+
+@app.route("/marketing/dashboard", methods=["GET"])
+def api_marketing_dashboard():
+    """Return consolidated marketing/reviews/insurance/competitive dashboard summary."""
+    leads = get_marketing_leads()
+    reviews = get_review_requests()
+    policies = get_insurance_policies()
+    competitors = get_competitor_snapshots()
+
+    lead_status_counts: dict[str, int] = {}
+    lead_channel_counts: dict[str, int] = {}
+    for row in leads:
+        fields = row.get("fields", {})
+        status = str(fields.get("status", "unknown")).strip().lower()
+        channel = str(fields.get("channel", "unknown")).strip().lower()
+        lead_status_counts[status] = lead_status_counts.get(status, 0) + 1
+        lead_channel_counts[channel] = lead_channel_counts.get(channel, 0) + 1
+
+    review_status_counts: dict[str, int] = {}
+    ratings = []
+    for row in reviews:
+        fields = row.get("fields", {})
+        status = str(fields.get("status", "unknown")).strip().lower()
+        review_status_counts[status] = review_status_counts.get(status, 0) + 1
+        rating = _to_float(fields.get("rating"))
+        if rating > 0:
+            ratings.append(rating)
+
+    insurance_status_counts: dict[str, int] = {}
+    expiring_soon = 0
+    now = datetime.utcnow()
+    for row in policies:
+        fields = row.get("fields", {})
+        status = str(fields.get("status", "unknown")).strip().lower()
+        insurance_status_counts[status] = insurance_status_counts.get(status, 0) + 1
+        expiration = _parse_iso_datetime(fields.get("expiration_date"))
+        if expiration and 0 <= (expiration - now).days <= 45:
+            expiring_soon += 1
+
+    return jsonify({
+        "leads": {
+            "count": len(leads),
+            "status_counts": lead_status_counts,
+            "channel_counts": lead_channel_counts,
+        },
+        "reviews": {
+            "count": len(reviews),
+            "status_counts": review_status_counts,
+            "average_rating": round(sum(ratings) / len(ratings), 2) if ratings else None,
+        },
+        "insurance": {
+            "count": len(policies),
+            "status_counts": insurance_status_counts,
+            "expiring_within_45_days": expiring_soon,
+        },
+        "competitive": {
+            "snapshot_count": len(competitors),
+            "latest_captured_at": max(
+                [str(row.get("fields", {}).get("captured_at", "")) for row in competitors if row.get("fields", {}).get("captured_at")],
+                default="",
+            ),
+        },
+    })
+
+
+@app.route("/marketing/attribution/summary", methods=["GET"])
+def api_marketing_attribution_summary():
+    """Return channel/campaign attribution summary from lead + review lifecycle data."""
+    leads = get_marketing_leads()
+    reviews = get_review_requests()
+
+    channel_summary: dict[str, dict[str, Any]] = {}
+    campaign_summary: dict[str, dict[str, Any]] = {}
+    family_to_channel: dict[str, str] = {}
+
+    for row in leads:
+        fields = row.get("fields", {})
+        channel = str(fields.get("channel", "unknown")).strip().lower() or "unknown"
+        campaign = str(fields.get("campaign", "uncategorized")).strip().lower() or "uncategorized"
+        status = str(fields.get("status", "unknown")).strip().lower()
+        family = str(fields.get("family_name", "")).strip().lower()
+
+        if family:
+            family_to_channel[family] = channel
+
+        chan_bucket = channel_summary.setdefault(channel, {
+            "lead_count": 0,
+            "converted_count": 0,
+            "lost_count": 0,
+        })
+        chan_bucket["lead_count"] += 1
+        if status == "converted":
+            chan_bucket["converted_count"] += 1
+        if status == "lost":
+            chan_bucket["lost_count"] += 1
+
+        camp_bucket = campaign_summary.setdefault(campaign, {
+            "lead_count": 0,
+            "converted_count": 0,
+        })
+        camp_bucket["lead_count"] += 1
+        if status == "converted":
+            camp_bucket["converted_count"] += 1
+
+    review_received_by_channel: dict[str, int] = {}
+    rating_totals: dict[str, float] = {}
+    rating_counts: dict[str, int] = {}
+    for row in reviews:
+        fields = row.get("fields", {})
+        if str(fields.get("status", "")).strip().lower() != "received":
+            continue
+        family = str(fields.get("family_name", "")).strip().lower()
+        channel = family_to_channel.get(family, "unknown")
+        review_received_by_channel[channel] = review_received_by_channel.get(channel, 0) + 1
+        rating = _to_float(fields.get("rating"))
+        if rating > 0:
+            rating_totals[channel] = rating_totals.get(channel, 0.0) + rating
+            rating_counts[channel] = rating_counts.get(channel, 0) + 1
+
+    for channel, bucket in channel_summary.items():
+        leads_total = bucket["lead_count"]
+        converted = bucket["converted_count"]
+        lost = bucket["lost_count"]
+        reviews_received = review_received_by_channel.get(channel, 0)
+        bucket["conversion_rate"] = round((converted / leads_total), 4) if leads_total else 0.0
+        bucket["loss_rate"] = round((lost / leads_total), 4) if leads_total else 0.0
+        bucket["reviews_received_count"] = reviews_received
+        bucket["review_per_lead_rate"] = round((reviews_received / leads_total), 4) if leads_total else 0.0
+        if rating_counts.get(channel, 0) > 0:
+            bucket["average_review_rating"] = round(rating_totals[channel] / rating_counts[channel], 2)
+        else:
+            bucket["average_review_rating"] = None
+
+    for campaign, bucket in campaign_summary.items():
+        leads_total = bucket["lead_count"]
+        converted = bucket["converted_count"]
+        bucket["conversion_rate"] = round((converted / leads_total), 4) if leads_total else 0.0
+
+    ranked_channels = sorted(
+        [{"channel": ch, **vals} for ch, vals in channel_summary.items()],
+        key=lambda item: (item["conversion_rate"], item["lead_count"]),
+        reverse=True,
+    )
+    ranked_campaigns = sorted(
+        [{"campaign": camp, **vals} for camp, vals in campaign_summary.items()],
+        key=lambda item: (item["conversion_rate"], item["lead_count"]),
+        reverse=True,
+    )
+
+    return jsonify({
+        "lead_count": len(leads),
+        "review_count": len(reviews),
+        "channels": ranked_channels,
+        "campaigns": ranked_campaigns,
+    })
 
 
 # --- Telegram bot ---
@@ -1519,39 +4172,81 @@ def _is_staff(chat_id: int) -> bool:
     return chat_id in STAFF_CHAT_IDS
 
 
+def _actor_id(update: Update) -> int:
+    """Return stable actor identity (user id when available, else chat id)."""
+    if update.effective_user and update.effective_user.id is not None:
+        return int(update.effective_user.id)
+    return int(update.effective_chat.id)
+
+
+def _chat_id(update: Update) -> int:
+    """Return chat id for the current update."""
+    return int(update.effective_chat.id)
+
+
+def _is_private_chat(update: Update) -> bool:
+    """Return True when command is sent in a direct bot chat."""
+    return bool(update.effective_chat and update.effective_chat.type == "private")
+
+
+async def _require_private_chat(update: Update, command_name: str) -> bool:
+    """Deny sensitive commands in groups/channels to avoid accidental data exposure."""
+    if _is_private_chat(update):
+        return True
+    if update.message:
+        await update.message.reply_text(
+            f"⛔ {command_name} is only available in a private chat with this bot."
+        )
+    elif update.callback_query:
+        await update.callback_query.answer(
+            "This action is only available in a private chat with this bot.",
+            show_alert=True,
+        )
+    return False
+
+
 async def _require_staff(update: Update) -> bool:
     """Check that the sender is staff. Replies with an error and returns False if not."""
-    chat_id = update.effective_chat.id
-    if not _is_staff(chat_id):
-        logger.warning("Non-staff chat %s attempted restricted command", chat_id)
+    actor_id = _actor_id(update)
+    if not _is_staff(actor_id):
+        logger.warning("Non-staff actor %s attempted restricted command", actor_id)
         if update.message:
             await update.message.reply_text("⛔ This command is for staff only.")
         return False
     return True
 
 
-def _linked_children_for_chat(chat_id: int) -> list[dict]:
+def _linked_children_for_chat(primary_id: int, fallback_chat_id: int | None = None) -> list[dict]:
     """Return children linked to a parent Telegram chat_id."""
     children = get_children()
+    valid_ids = {str(primary_id)}
+    if fallback_chat_id is not None:
+        valid_ids.add(str(fallback_chat_id))
     return [
         child for child in children
-        if str(child.get("fields", {}).get("parent_chat_id", "")).strip() == str(chat_id)
+        if str(child.get("fields", {}).get("parent_chat_id", "")).strip() in valid_ids
     ]
 
 
 async def _require_child_access(update: Update, child: dict) -> bool:
     """Allow staff, or the parent account linked to the child."""
-    chat_id = update.effective_chat.id
-    if _is_staff(chat_id):
+    actor_id = _actor_id(update)
+    chat_id = _chat_id(update)
+    if _is_staff(actor_id):
         return True
     linked_chat = str(child.get("fields", {}).get("parent_chat_id", "")).strip()
-    if linked_chat and linked_chat == str(chat_id):
+    if linked_chat and linked_chat in {str(actor_id), str(chat_id)}:
         return True
     if update.message:
         await update.message.reply_text(
             "⛔ You can only access records for your linked child. "
             "Use `/link <first> <last>` or contact the office manager.",
             parse_mode="Markdown",
+        )
+    elif update.callback_query:
+        await update.callback_query.answer(
+            "You can only access records for your linked child.",
+            show_alert=True,
         )
     return False
 
@@ -1730,24 +4425,50 @@ async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def milestones_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /milestones <child> — show recent developmental milestones."""
+    if not await _require_private_chat(update, "/milestones"):
+        return
+    actor_id = _actor_id(update)
+    chat_id = _chat_id(update)
     if not context.args:
-        children = get_children()
-        await update.message.reply_text("Which child?", reply_markup=build_child_keyboard(children))
+        if _is_staff(actor_id):
+            children = get_children()
+            await update.message.reply_text("Which child?", reply_markup=build_child_keyboard(children))
+            return
+        linked = _linked_children_for_chat(actor_id, fallback_chat_id=chat_id)
+        if not linked:
+            await update.message.reply_text(
+                "Usage: `/milestones <child>`\n"
+                "You must link your account first with `/link <first> <last>`.",
+                parse_mode="Markdown",
+            )
+            return
+        names = ", ".join(f"{c['fields'].get('first_name', '')} {c['fields'].get('last_name', '')}".strip() for c in linked)
+        await update.message.reply_text(
+            f"Usage: `/milestones <child>`\nYour linked child records: {names}",
+            parse_mode="Markdown",
+        )
         return
     child = find_child(context.args[0])
     if not child:
-        await update.message.reply_text(f"❌ Child not found. Try a first name.")
+        await update.message.reply_text("❌ Child not found. Try a first name.")
+        return
+    if not await _require_child_access(update, child):
         return
     milestones = get_milestones(child_id(child))
     await update.message.reply_text(fmt_milestones(child, milestones), parse_mode="Markdown")
 
+
 async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /activity — show today's scheduled activities."""
+    """Handle /activity — show today's scheduled activities (staff only)."""
+    if not await _require_private_chat(update, "/activity"):
+        return
+    if not await _require_staff(update):
+        return
     today = datetime.now().strftime("%Y-%m-%d")
     activities = get_activities(today)
-    # Sort by start time
     activities.sort(key=lambda a: a["fields"].get("start_time", ""))
     await update.message.reply_text(fmt_activities(activities), parse_mode="Markdown")
+
 
 async def checkin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /checkin <child> — record arrival time (staff only)."""
@@ -1849,6 +4570,15 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     question = " ".join(context.args)
     question_lower = question.lower()
+    chat_id = update.effective_chat.id
+    restricted_dashboard_keys = {"staffing", "subsidy", "subsidies", "forecast", "health"}
+    if any(key in question_lower for key in restricted_dashboard_keys) and not _is_staff(chat_id):
+        await update.message.reply_text(
+            "⛔ Staffing, subsidy, forecast, and health dashboards are staff-only. "
+            "Parents can still ask general policy questions with `/ask`.",
+            parse_mode="Markdown",
+        )
+        return
 
     # 1. Try AI client (cache + Ollama)
     if AI_AVAILABLE:
@@ -1865,7 +4595,8 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 3. Try regulatory RAG
     try:
-        rag_answer = get_regulatory_answer(question)
+        dynamic_rules = get_regulatory_rules(active_only=True)
+        rag_answer = get_regulatory_answer(question, dynamic_rules=dynamic_rules)
         if rag_answer:
             await update.message.reply_text(rag_answer, parse_mode="Markdown")
             return
@@ -1888,6 +4619,10 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def staffing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /staffing — show today's staff coverage and ratio compliance."""
+    if not await _require_private_chat(update, "/staffing"):
+        return
+    if not await _require_staff(update):
+        return
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     today = days[datetime.now().weekday()]
     avail = get_staff_availability(today)
@@ -1919,6 +4654,10 @@ async def staffing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /callout [room] — find available substitutes for a staff call-out."""
+    if not await _require_private_chat(update, "/callout"):
+        return
+    if not await _require_staff(update):
+        return
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     today = days[datetime.now().weekday()]
 
@@ -1984,7 +4723,12 @@ async def forecast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = get_enrollment_history()
     children = get_children()
     active = [c for c in children if c["fields"].get("status", "").lower() != "inactive"]
-    waitlist = 5  # From seed data
+    waitlist_entries = get_waitlist()
+    waitlist_open = [
+        w for w in waitlist_entries
+        if str(w.get("fields", {}).get("status", "")).lower() in {"new", "contacted", "tour_scheduled", "offered"}
+    ]
+    waitlist = len(waitlist_open)
 
     lines = ["📈 *Enrollment Forecaster*", ""]
     lines.append(f"Current enrollment: {len(active)} children")
@@ -2006,10 +4750,79 @@ async def forecast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"*Revenue:* ${current_revenue:,.2f}/mo (current)")
     if history and len(history) >= 2:
         prev_rev = _to_float(history[-2]["fields"].get("monthly_revenue", 0))
-        if prev_rev > 0 and current_revenue > prev_rev:
+        if prev_rev > 0:
             delta_pct = ((current_revenue - prev_rev) / prev_rev) * 100
-            lines.append(f"📈 Revenue up {delta_pct:.0f}% since {history[-2]['fields'].get('month', '')}")
+            trend_emoji = "📈" if delta_pct >= 0 else "📉"
+            lines.append(f"{trend_emoji} Revenue {delta_pct:+.0f}% vs {history[-2]['fields'].get('month', '')}")
     lines.append("")
+
+    # Anomaly detection (latest month drop vs prior 3-month average)
+    if history and len(history) >= 4:
+        recent = history[-1]["fields"]
+        prior = history[-4:-1]
+        avg_prior_enrollment = sum(_to_float(h["fields"].get("total_enrolled", 0)) for h in prior) / 3
+        avg_prior_revenue = sum(_to_float(h["fields"].get("monthly_revenue", 0)) for h in prior) / 3
+        recent_enrollment = _to_float(recent.get("total_enrolled", 0))
+        recent_revenue = _to_float(recent.get("monthly_revenue", 0))
+        anomalies = []
+        if avg_prior_enrollment > 0 and recent_enrollment < avg_prior_enrollment * 0.9:
+            anomalies.append("enrollment drop >10% vs prior 3-month average")
+        if avg_prior_revenue > 0 and recent_revenue < avg_prior_revenue * 0.9:
+            anomalies.append("revenue drop >10% vs prior 3-month average")
+        if anomalies:
+            lines.append(f"⚠ *Anomaly:* {'; '.join(anomalies)}")
+            lines.append("")
+
+    # Churn proxy (waitlist retention risk)
+    high_risk = [
+        w for w in waitlist_open
+        if _to_float(w.get("fields", {}).get("retention_risk_score", 0)) >= 70
+    ]
+    medium_risk = [
+        w for w in waitlist_open
+        if 40 <= _to_float(w.get("fields", {}).get("retention_risk_score", 0)) < 70
+    ]
+    lines.append(f"*Churn Proxy:* high-risk leads {len(high_risk)}, medium-risk leads {len(medium_risk)}")
+
+    rooms = get_room_ratios()
+    capacity = sum(_to_float(r.get("fields", {}).get("max_children", 0)) for r in rooms)
+    if capacity > 0:
+        utilization = round((len(active) / capacity) * 100)
+        lines.append(f"*Capacity utilization:* {utilization}% ({len(active)}/{int(capacity)})")
+    else:
+        lines.append("*Capacity utilization:* unavailable (set FORECAST_LICENSED_CAPACITY or Room Ratios.max_children)")
+
+    # Breakeven signal (no hardcoded defaults)
+    breakeven_cost_candidates = [
+        _to_float(os.getenv("FORECAST_OPERATING_COST", "0")),
+        _to_float(os.getenv("BREAKEVEN_MONTHLY_COST", "0")),
+        _to_float(last.get("breakeven_monthly_cost", 0)),
+        _to_float(last.get("operating_cost", 0)),
+        _to_float(last.get("monthly_cost", 0)),
+        _to_float(last.get("fixed_costs", 0)),
+    ]
+    breakeven_cost = next((v for v in breakeven_cost_candidates if v > 0), 0.0)
+    avg_rev_per_child = _to_float(os.getenv("AVG_MONTHLY_REVENUE_PER_CHILD", "0"))
+    if avg_rev_per_child <= 0:
+        rev_per_child_series = [
+            _to_float(h.get("fields", {}).get("monthly_revenue", 0)) / _to_float(h.get("fields", {}).get("total_enrolled", 0))
+            for h in history
+            if _to_float(h.get("fields", {}).get("total_enrolled", 0)) > 0 and _to_float(h.get("fields", {}).get("monthly_revenue", 0)) > 0
+        ]
+        if rev_per_child_series:
+            avg_rev_per_child = sum(rev_per_child_series) / len(rev_per_child_series)
+        elif len(active) > 0 and current_revenue > 0:
+            avg_rev_per_child = current_revenue / len(active)
+
+    if breakeven_cost > 0 and avg_rev_per_child > 0:
+        breakeven_children = int((breakeven_cost / avg_rev_per_child) + 0.999)
+        gap_children = breakeven_children - len(active)
+        if gap_children > 0:
+            lines.append(f"*Breakeven:* needs ~{breakeven_children} children (gap: {gap_children})")
+        else:
+            lines.append(f"*Breakeven:* above threshold by {abs(gap_children)} children")
+    else:
+        lines.append("*Breakeven:* unavailable (set FORECAST_OPERATING_COST/BREAKEVEN_MONTHLY_COST and AVG_MONTHLY_REVENUE_PER_CHILD)")
 
     if last.get("notes"):
         warning_indicators = ["warning", "decline", "part-time"]
@@ -2148,13 +4961,34 @@ async def vaccines_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /portfolio <child> — show a child's portfolio of milestone moments."""
+    if not await _require_private_chat(update, "/portfolio"):
+        return
+    actor_id = _actor_id(update)
+    chat_id = _chat_id(update)
     if not context.args:
-        children = get_children()
-        await update.message.reply_text("Which child's portfolio?", reply_markup=build_child_keyboard(children))
+        if _is_staff(actor_id):
+            children = get_children()
+            await update.message.reply_text("Which child's portfolio?", reply_markup=build_child_keyboard(children))
+            return
+        linked = _linked_children_for_chat(actor_id, fallback_chat_id=chat_id)
+        if not linked:
+            await update.message.reply_text(
+                "Usage: `/portfolio <child>`\n"
+                "You must link your account first with `/link <first> <last>`.",
+                parse_mode="Markdown",
+            )
+            return
+        names = ", ".join(f"{c['fields'].get('first_name', '')} {c['fields'].get('last_name', '')}".strip() for c in linked)
+        await update.message.reply_text(
+            f"Usage: `/portfolio <child>`\nYour linked child records: {names}",
+            parse_mode="Markdown",
+        )
         return
     child = find_child(context.args[0])
     if not child:
         await update.message.reply_text("❌ Child not found.")
+        return
+    if not await _require_child_access(update, child):
         return
     moments = get_portfolio_moments(child_id(child), limit=10)
     c = child["fields"]
@@ -2244,8 +5078,24 @@ async def moment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /book [child] [month] — view monthly milestone books."""
+    chat_id = update.effective_chat.id
     if not context.args:
-        # Show all May 2026 books
+        if not _is_staff(chat_id):
+            linked = _linked_children_for_chat(chat_id)
+            if not linked:
+                await update.message.reply_text(
+                    "Usage: `/book <child>`\n"
+                    "You must link your account first with `/link <first> <last>`.",
+                    parse_mode="Markdown",
+                )
+                return
+            names = ", ".join(f"{c['fields'].get('first_name', '')} {c['fields'].get('last_name', '')}".strip() for c in linked)
+            await update.message.reply_text(
+                f"Usage: `/book <child>`\nYour linked child records: {names}",
+                parse_mode="Markdown",
+            )
+            return
+
         month = datetime.now().strftime("%Y-%m")
         books = get_all_monthly_books(month)
         if not books:
@@ -2272,6 +5122,8 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     child = find_child(context.args[0])
     if not child:
         await update.message.reply_text("❌ Child not found.")
+        return
+    if not await _require_child_access(update, child):
         return
 
     month = context.args[1] if len(context.args) > 1 else datetime.now().strftime("%Y-%m")
@@ -2466,12 +5318,30 @@ async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def meetings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /meetings [date] — list upcoming meetings."""
+    chat_id = update.effective_chat.id
     date_filter = context.args[0] if context.args else None
-    meetings = get_meetings(date=date_filter)
+    if _is_staff(chat_id):
+        meetings = get_meetings(date=date_filter)
+    else:
+        linked_children = _linked_children_for_chat(chat_id)
+        if not linked_children:
+            await update.message.reply_text(
+                "You have no linked child record yet. Use `/link <first> <last>` first.",
+                parse_mode="Markdown",
+            )
+            return
+        linked_child_ids = {str(c.get("id")) for c in linked_children}
+        meetings = [
+            meeting for meeting in get_meetings(date=date_filter, meeting_type="parent_teacher")
+            if str(meeting.get("fields", {}).get("child", "")) in linked_child_ids
+        ]
 
     if not meetings:
         label = f"on {date_filter}" if date_filter else ""
-        await update.message.reply_text(f"📅 No meetings scheduled {label}.".strip())
+        if _is_staff(chat_id):
+            await update.message.reply_text(f"📅 No meetings scheduled {label}.".strip())
+        else:
+            await update.message.reply_text(f"📅 No parent-teacher meetings scheduled {label}.".strip())
         return
 
     label = f"for {date_filter}" if date_filter else "(upcoming)"
@@ -2925,6 +5795,8 @@ async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if c["fields"]["first_name"].lower() in text.lower():
                 child = find_child(c["fields"]["first_name"])
                 if child:
+                    if not await _require_child_access(update, child):
+                        return
                     today = datetime.now().strftime("%Y-%m-%d")
                     report = get_daily_report(child_id(child), today)
                     if report:
@@ -2942,6 +5814,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         children = get_children()
         child = next((c for c in children if str(c["id"]) == child_id_str), None)
         if child:
+            if not await _require_child_access(update, child):
+                return
             today = datetime.now().strftime("%Y-%m-%d")
             report = get_daily_report(child_id(child), today)
             if report:

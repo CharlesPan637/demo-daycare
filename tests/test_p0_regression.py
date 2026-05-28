@@ -1,0 +1,236 @@
+import importlib
+import os
+import unittest
+
+
+class P0RegressionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("API_KEY", "test-key")
+        cls.mod = importlib.import_module("bot.app")
+        cls.app = cls.mod.app
+
+    def setUp(self):
+        self.mod.API_KEY = "test-key"
+        self.mod.API_KEY_NEXT = ""
+        self.mod.API_KEY_NEXT_ACTIVE_UNTIL = ""
+        self.mod.RATE_LIMIT_ENABLED = False
+        with self.mod._IDEMPOTENCY_LOCK:
+            self.mod._IDEMPOTENCY_STORE.clear()
+        with self.mod._RATE_LIMIT_LOCK:
+            self.mod._RATE_LIMIT_STORE.clear()
+        self.mod.get_waitlist = lambda status=None: []
+        self.client = self.app.test_client()
+
+    def _auth_headers(self):
+        return {"X-API-Key": "test-key"}
+
+    def _assert_error_code(self, response, expected_status, expected_code):
+        self.assertEqual(response.status_code, expected_status)
+        payload = response.get_json()
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload.get("error", {}).get("code"), expected_code)
+        self.assertTrue(payload.get("error", {}).get("request_id"))
+
+    def test_auth_gate_401_and_200(self):
+        denied = self.client.get("/waitlist")
+        self._assert_error_code(denied, 401, "unauthorized")
+
+        self.mod.get_waitlist = lambda status=None: [{"id": 1, "fields": {"status": "new"}}]
+        ok = self.client.get("/waitlist", headers=self._auth_headers())
+        self.assertEqual(ok.status_code, 200)
+        payload = ok.get_json()
+        self.assertEqual(payload.get("count"), 1)
+        self.assertIn("entries", payload)
+
+    def test_pickup_verify_and_events_denied_and_override(self):
+        self.mod.get_child_guardian_links = lambda child_id_val: [
+            {"id": 77, "fields": {"guardian": 12, "legal_status": "custodial", "pickup_allowed": True, "pickup_password": "1234"}}
+        ]
+        verify = self.client.post(
+            "/pickup/verify",
+            json={"child_id": 1, "guardian_id": 12, "pickup_password": "1234"},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(verify.status_code, 200)
+        self.assertEqual(verify.get_json().get("allowed"), True)
+
+        self.mod.add_pickup_event = lambda **kwargs: {"id": 101}
+        denied = self.client.post(
+            "/pickup/events",
+            json={"child_id": 1, "approved": False, "denial_code": "pickup_not_allowed", "denial_reason": "Policy"},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(denied.status_code, 200)
+        self.assertEqual(denied.get_json().get("status"), "logged")
+
+        override = self.client.post(
+            "/pickup/events",
+            json={
+                "child_id": 1,
+                "approved": True,
+                "override_used": True,
+                "override_reason": "Manual ID verified",
+                "override_approved_by": 1,
+            },
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(override.status_code, 200)
+        self.assertEqual(override.get_json().get("status"), "logged")
+
+    def test_invoice_allocation_and_autopay_attempts(self):
+        invoice = {"id": 5, "fields": {"account": 10, "total_due": 100, "status": "issued"}}
+        parties = [{
+            "id": 1,
+            "fields": {
+                "account": 10,
+                "guardian": 3,
+                "payer_label": "Primary",
+                "share_pct": 100,
+                "fixed_amount": 0,
+                "priority": 1,
+                "auto_debit": True,
+                "status": "active",
+            },
+        }]
+        self.mod.get_invoice = lambda invoice_id_val: invoice
+        self.mod.get_billing_account_parties = lambda account_id_val=None, status=None: parties
+        self.mod.get_payments = lambda invoice_id_val=None: []
+        self.mod.create_autopay_attempt = lambda payload: {"id": 901, "fields": payload}
+        self.mod.update_invoice = lambda invoice_id_val, fields: {"ok": True}
+
+        alloc = self.client.post("/billing/invoices/5/allocate", headers=self._auth_headers())
+        self.assertEqual(alloc.status_code, 200)
+        alloc_payload = alloc.get_json()
+        self.assertEqual(alloc_payload.get("allocation_count"), 1)
+        self.assertEqual(alloc_payload.get("allocations", [{}])[0].get("allocated_amount"), 100.0)
+
+        autopay = self.client.post(
+            "/billing/invoices/5/autopay/run",
+            json={"dry_run": True},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(autopay.status_code, 200)
+        auto_payload = autopay.get_json()
+        self.assertEqual(auto_payload.get("attempt_count"), 1)
+        self.assertEqual(auto_payload.get("attempts", [{}])[0].get("status"), "simulated")
+
+    def test_subsidy_claim_reconcile_and_summary(self):
+        created_claim = {}
+
+        def _create_claim(fields):
+            created_claim.update(fields)
+            return {"id": 7, "fields": fields}
+
+        def _claims(claim_month=None, status=None, program=None):
+            return [
+                {"id": 7, "fields": {"claim_month": "2026-05", "program": "state", "child": 1, "expected_amount": 100, "received_amount": 90, "status": "variance"}},
+                {"id": 8, "fields": {"claim_month": "2026-05", "program": "state", "child": 2, "expected_amount": 100, "received_amount": 100, "status": "paid"}},
+            ]
+
+        updated = {}
+
+        def _update_claim(claim_id_val, fields):
+            updated.update(fields)
+            return {"ok": True}
+
+        self.mod.create_subsidy_claim = _create_claim
+        self.mod.get_subsidy_claims = _claims
+        self.mod.update_subsidy_claim = _update_claim
+
+        create = self.client.post(
+            "/subsidy/claims",
+            json={"claim_month": "2026-05", "child": 1, "program": "state", "expected_amount": 100, "received_amount": 90},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(create.status_code, 201)
+        self.assertEqual(create.get_json().get("status"), "created")
+        self.assertEqual(created_claim.get("status"), "variance")
+
+        reconcile = self.client.post(
+            "/subsidy/reconcile/7",
+            json={"received_amount": 100},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(reconcile.status_code, 200)
+        self.assertEqual(updated.get("status"), "paid")
+        self.assertEqual(updated.get("variance"), 0.0)
+
+        summary = self.client.get("/subsidy/reconciliation/summary", headers=self._auth_headers())
+        self.assertEqual(summary.status_code, 200)
+        payload = summary.get_json()
+        self.assertEqual(payload.get("count"), 2)
+        self.assertEqual(payload.get("variance_buckets", {}).get("overpaid"), 0)
+        self.assertEqual(payload.get("variance_buckets", {}).get("exact"), 1)
+
+    def test_waitlist_create_advance_and_list(self):
+        captured_create = {}
+        captured_patch = {}
+
+        def _add_waitlist(fields):
+            captured_create.update(fields)
+            return {"id": 11, "fields": fields}
+
+        def _patch_waitlist(entry_id_val, fields):
+            captured_patch.update(fields)
+            return {"ok": True}
+
+        entries = [
+            {"id": 11, "fields": {"status": "new", "last_contact_at": "2026-05-01T10:00:00", "priority_score": 3}},
+            {"id": 12, "fields": {"status": "contacted", "last_contact_at": "2026-05-02T10:00:00", "priority_score": 4}},
+        ]
+        self.mod.add_waitlist_entry = _add_waitlist
+        self.mod.update_waitlist_entry = _patch_waitlist
+        self.mod.get_waitlist = lambda status=None: entries if not status else [e for e in entries if e["fields"].get("status") == status]
+
+        create = self.client.post(
+            "/waitlist",
+            json={"child_first_name": "Ava", "child_last_name": "Lee", "desired_start_date": "2026-06-01", "status": "new"},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(create.status_code, 201)
+        self.assertEqual(create.get_json().get("status"), "created")
+        self.assertEqual(captured_create.get("desired_start_date"), "2026-06-01")
+
+        advance = self.client.post("/waitlist/11/advance", json={}, headers=self._auth_headers())
+        self.assertEqual(advance.status_code, 200)
+        self.assertEqual(advance.get_json().get("new_status"), "contacted")
+        self.assertEqual(captured_patch.get("status"), "contacted")
+
+        listed = self.client.get("/waitlist?limit=1&offset=0&sort_by=id&sort_dir=asc", headers=self._auth_headers())
+        self.assertEqual(listed.status_code, 200)
+        list_payload = listed.get_json()
+        self.assertEqual(list_payload.get("count"), 2)
+        self.assertEqual(len(list_payload.get("entries", [])), 1)
+
+    def test_marketing_attribution_summary(self):
+        self.mod.get_marketing_leads = lambda channel=None, status=None: [
+            {"id": 1, "fields": {"family_name": "Ng", "channel": "google", "campaign": "summer", "status": "converted"}},
+            {"id": 2, "fields": {"family_name": "Diaz", "channel": "google", "campaign": "summer", "status": "lost"}},
+            {"id": 3, "fields": {"family_name": "Ali", "channel": "facebook", "campaign": "referral", "status": "converted"}},
+        ]
+        self.mod.get_review_requests = lambda platform=None, status=None: [
+            {"id": 11, "fields": {"family_name": "Ng", "status": "received", "rating": 5}},
+            {"id": 12, "fields": {"family_name": "Ali", "status": "received", "rating": 4}},
+            {"id": 13, "fields": {"family_name": "Diaz", "status": "requested", "rating": 0}},
+        ]
+
+        resp = self.client.get("/marketing/attribution/summary", headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("lead_count"), 3)
+        self.assertEqual(payload.get("review_count"), 3)
+
+        channels = {row["channel"]: row for row in payload.get("channels", [])}
+        self.assertAlmostEqual(channels["google"]["conversion_rate"], 0.5, places=4)
+        self.assertEqual(channels["google"]["reviews_received_count"], 1)
+        self.assertAlmostEqual(channels["google"]["average_review_rating"], 5.0, places=2)
+        self.assertAlmostEqual(channels["facebook"]["conversion_rate"], 1.0, places=4)
+
+        campaigns = {row["campaign"]: row for row in payload.get("campaigns", [])}
+        self.assertEqual(campaigns["summer"]["lead_count"], 2)
+        self.assertAlmostEqual(campaigns["summer"]["conversion_rate"], 0.5, places=4)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
