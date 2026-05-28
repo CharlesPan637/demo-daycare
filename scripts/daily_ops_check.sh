@@ -34,6 +34,10 @@ staffing_unresolved=$(jq -r '.unresolved_predicted_gap_rooms // -1' /tmp/daily_s
 staffing_rebalancing_actions=$(jq -r '.schedule_optimization.rebalancing_actions // 0' /tmp/daily_staffing.out 2>/dev/null || echo 0)
 staffing_shift_extension_actions=$(jq -r '.schedule_optimization.shift_extension_actions // 0' /tmp/daily_staffing.out 2>/dev/null || echo 0)
 staffing_unresolved_max=${STAFFING_UNRESOLVED_MAX:-0}
+pickup_code=$(curl -s -o /tmp/daily_pickup_events.out -w '%{http_code}' -H "X-API-Key: $API_KEY" "$BASE_URL/pickup/events?approved=true&limit=50&offset=0&sort_by=timestamp&sort_dir=desc")
+pickup_count=$(jq -r '.count // -1' /tmp/daily_pickup_events.out 2>/dev/null || echo -1)
+pickup_verified_count=$(jq -r '[.events[]?.fields | select((.document_type // "") != "" and (.document_id_last4 // "") != "" and (.presented_name // "") != "")] | length' /tmp/daily_pickup_events.out 2>/dev/null || echo -1)
+pickup_verified_min=${PICKUP_VERIFIED_MIN:-1}
 
 echo "[daily_ops] health_status=$health_code"
 echo "[daily_ops] unauth_waitlist_status=$unauth_code"
@@ -49,6 +53,10 @@ echo "[daily_ops] staffing_unresolved_predicted_gap_rooms=$staffing_unresolved"
 echo "[daily_ops] staffing_rebalancing_actions=$staffing_rebalancing_actions"
 echo "[daily_ops] staffing_shift_extension_actions=$staffing_shift_extension_actions"
 echo "[daily_ops] staffing_unresolved_max=$staffing_unresolved_max"
+echo "[daily_ops] pickup_events_status=$pickup_code"
+echo "[daily_ops] pickup_events_count=$pickup_count"
+echo "[daily_ops] pickup_verified_metadata_count=$pickup_verified_count"
+echo "[daily_ops] pickup_verified_min=$pickup_verified_min"
 
 if [[ "$health_code" != "200" ]]; then
   echo "[daily_ops] FAIL: health expected 200"
@@ -99,6 +107,18 @@ if [[ "$staffing_unresolved" == "-1" ]]; then
 fi
 if (( staffing_unresolved > staffing_unresolved_max )); then
   echo "[daily_ops] FAIL: staffing unresolved predicted gaps exceed threshold"
+  exit 1
+fi
+if [[ "$pickup_code" != "200" ]]; then
+  echo "[daily_ops] FAIL: pickup events endpoint expected 200"
+  exit 1
+fi
+if [[ "$pickup_count" == "-1" || "$pickup_verified_count" == "-1" ]]; then
+  echo "[daily_ops] FAIL: pickup events response parse failed"
+  exit 1
+fi
+if (( pickup_verified_count < pickup_verified_min )); then
+  echo "[daily_ops] FAIL: insufficient pickup events with verification metadata"
   exit 1
 fi
 
