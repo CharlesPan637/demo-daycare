@@ -125,6 +125,11 @@ Override-approved example:
 {
   "child_id": 1,
   "approved": true,
+  "document_type": "driver_license",
+  "document_id_last4": "1234",
+  "presented_name": "Jane Doe",
+  "verified_by_staff": 9,
+  "verified_at": "2026-05-28T17:50:00Z",
   "override_used": true,
   "override_reason": "Manual ID verified",
   "override_approved_by": 1
@@ -133,6 +138,7 @@ Override-approved example:
 
 Validation:
 - If `approved=false`, `denial_code` is required.
+- If `document_type` is provided, require `document_id_last4` (4 chars) and `presented_name`.
 - `denial_code` must be one of:
   - `guardian_not_linked`
   - `legal_restriction`
