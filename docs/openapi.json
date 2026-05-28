@@ -1,0 +1,3780 @@
+{
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      }
+    }
+  },
+  "info": {
+    "description": "Operational API for daycare staffing, compliance, billing, waitlist, and workflow health.",
+    "title": "Daycare Ops API",
+    "version": "1.1.0-p1"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/billing/accounts/{account_id_val}/parties": {
+      "get": {
+        "operationId": "api_billing_account_parties_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return split-billing party rules for an account."
+      },
+      "post": {
+        "operationId": "api_billing_account_add_party_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "auto_debit": {
+                    "type": "boolean"
+                  },
+                  "fixed_amount": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "guardian": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "payer_label": {
+                    "type": "string"
+                  },
+                  "priority": {
+                    "type": "number"
+                  },
+                  "share_pct": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "active",
+                      "inactive",
+                      "paused"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "guardian"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a split-billing party rule for an account."
+      }
+    },
+    "/billing/accounts/{account_id_val}/parties/{party_id_val}": {
+      "patch": {
+        "operationId": "api_billing_account_patch_party_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "party_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "auto_debit": {
+                    "type": "boolean"
+                  },
+                  "fixed_amount": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "payer_label": {
+                    "type": "string"
+                  },
+                  "priority": {
+                    "type": "number"
+                  },
+                  "share_pct": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "active",
+                      "inactive",
+                      "paused"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Patch split-billing party rules for an account."
+      }
+    },
+    "/billing/aging": {
+      "get": {
+        "operationId": "api_billing_aging_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return invoice aging buckets based on open balances and due dates."
+      }
+    },
+    "/billing/invoices": {
+      "get": {
+        "operationId": "api_billing_invoices_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return invoices with optional status/account filters."
+      }
+    },
+    "/billing/invoices/generate": {
+      "post": {
+        "operationId": "api_billing_generate_invoices_post",
+        "parameters": [
+          {
+            "description": "Optional replay key (TTL: 86400s). Same key+payload returns cached response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "invoices": {
+                    "items": {
+                      "properties": {
+                        "account": {
+                          "oneOf": [
+                            {
+                              "type": "integer"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "due_date": {
+                          "format": "date",
+                          "type": "string"
+                        },
+                        "late_fees": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "period_end": {
+                          "format": "date",
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "format": "date",
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "draft",
+                            "issued",
+                            "partial",
+                            "paid",
+                            "void"
+                          ],
+                          "type": "string"
+                        },
+                        "subsidy_credit": {
+                          "type": "number"
+                        },
+                        "subtotal": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "total_due": {
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "account",
+                        "period_start",
+                        "period_end",
+                        "due_date",
+                        "total_due"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "invoices"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create draft invoices from request payload."
+      }
+    },
+    "/billing/invoices/{invoice_id_val}": {
+      "get": {
+        "operationId": "api_billing_invoice_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return one invoice with payment and balance details."
+      }
+    },
+    "/billing/invoices/{invoice_id_val}/allocate": {
+      "post": {
+        "operationId": "api_billing_invoice_allocate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Compute split-billing allocations for an invoice."
+      }
+    },
+    "/billing/invoices/{invoice_id_val}/autopay/attempts": {
+      "get": {
+        "operationId": "api_billing_invoice_autopay_attempts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List autopay attempt audit rows for an invoice."
+      }
+    },
+    "/billing/invoices/{invoice_id_val}/autopay/run": {
+      "post": {
+        "operationId": "api_billing_invoice_autopay_run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional replay key (TTL: 86400s). Same key+payload returns cached response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "dry_run": {
+                    "type": "boolean"
+                  },
+                  "simulate_fail_party_ids": {
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Execute autopay attempts for auto-debit parties on an invoice."
+      }
+    },
+    "/billing/payments": {
+      "post": {
+        "operationId": "api_billing_payment_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "amount": {
+                    "minimum": 0.01,
+                    "type": "number"
+                  },
+                  "invoice": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "paid_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "posted",
+                      "pending",
+                      "failed",
+                      "void"
+                    ],
+                    "type": "string"
+                  },
+                  "txn_ref": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "invoice",
+                  "amount",
+                  "paid_at",
+                  "method"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record a payment and update invoice status when fully paid."
+      }
+    },
+    "/book/{child_name}": {
+      "get": {
+        "operationId": "api_book_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return the monthly milestone book for *child_name* (optional ?month=YYYY-MM)."
+      }
+    },
+    "/books": {
+      "get": {
+        "operationId": "api_books_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return all monthly books (optional ?month=YYYY-MM)."
+      }
+    },
+    "/children/{child_id_val}/guardians": {
+      "get": {
+        "operationId": "api_get_child_guardians_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return all guardian links and guardian profiles for a child."
+      },
+      "post": {
+        "operationId": "api_add_child_guardian_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "guardian": {
+                    "properties": {
+                      "email": {
+                        "type": "string"
+                      },
+                      "first_name": {
+                        "type": "string"
+                      },
+                      "last_name": {
+                        "type": "string"
+                      },
+                      "phone": {
+                        "type": "string"
+                      },
+                      "relationship": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "guardian_id": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "link": {
+                    "properties": {
+                      "court_order_url": {
+                        "type": "string"
+                      },
+                      "legal_status": {
+                        "type": "string"
+                      },
+                      "notes": {
+                        "type": "string"
+                      },
+                      "pickup_allowed": {
+                        "type": "boolean"
+                      },
+                      "pickup_password": {
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a guardian and link to child, or link an existing guardian."
+      }
+    },
+    "/children/{child_id_val}/guardians/{guardian_id_val}": {
+      "patch": {
+        "operationId": "api_patch_child_guardian_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "guardian_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "court_order_url": {
+                    "type": "string"
+                  },
+                  "legal_status": {
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "pickup_allowed": {
+                    "type": "boolean"
+                  },
+                  "pickup_password": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Patch custody/pickup fields for a child-guardian link."
+      }
+    },
+    "/compliance/medication-logs": {
+      "get": {
+        "operationId": "api_compliance_list_medication_logs_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List medication logs, optionally filtered by child/date."
+      },
+      "post": {
+        "operationId": "api_compliance_add_medication_log_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "administered": {
+                    "type": "boolean"
+                  },
+                  "administered_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "administered_by": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "child": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "dosage": {
+                    "type": "string"
+                  },
+                  "medication_name": {
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "child",
+                  "medication_name",
+                  "dosage"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a medication administration log entry."
+      }
+    },
+    "/compliance/sanitation-checks": {
+      "get": {
+        "operationId": "api_compliance_list_sanitation_checks_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List sanitation checks, optionally filtered by status/date."
+      },
+      "post": {
+        "operationId": "api_compliance_add_sanitation_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "check_area": {
+                    "type": "string"
+                  },
+                  "check_item": {
+                    "type": "string"
+                  },
+                  "checked_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "checked_by": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "completed",
+                      "issue",
+                      "skipped"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "check_area",
+                  "check_item",
+                  "status",
+                  "checked_by"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a sanitation checklist entry."
+      }
+    },
+    "/compliance/sleep-safety-checks": {
+      "get": {
+        "operationId": "api_compliance_list_sleep_safety_checks_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List sleep safety checks, optionally filtered by child/status/date."
+      },
+      "post": {
+        "operationId": "api_compliance_add_sleep_safety_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "check_time": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "checked_by": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "child": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "safe",
+                      "attention",
+                      "incident"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "child",
+                  "status",
+                  "checked_by"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a sleep safety checklist entry."
+      }
+    },
+    "/forecast/assumptions": {
+      "get": {
+        "operationId": "api_forecast_assumptions_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return explicit forecasting assumptions used by automation/reporting."
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Health-check endpoint. Reports whether Grist and AI backends are reachable."
+      }
+    },
+    "/marketing/competitors/snapshots": {
+      "get": {
+        "operationId": "api_marketing_competitor_snapshots_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "competitor_name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List competitor snapshots with optional competitor filter."
+      },
+      "post": {
+        "operationId": "api_marketing_competitor_snapshots_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "capacity_estimate": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "captured_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "competitor_name": {
+                    "type": "string"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "source_url": {
+                    "type": "string"
+                  },
+                  "tuition_band": {
+                    "type": "string"
+                  },
+                  "waitlist_estimate": {
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "competitor_name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a competitive positioning snapshot row."
+      }
+    },
+    "/marketing/dashboard": {
+      "get": {
+        "operationId": "api_marketing_dashboard_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return consolidated marketing/reviews/insurance/competitive dashboard summary."
+      }
+    },
+    "/marketing/insurance/policies": {
+      "get": {
+        "operationId": "api_marketing_insurance_policies_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List insurance policies with optional status filter."
+      },
+      "post": {
+        "operationId": "api_marketing_insurance_policies_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "carrier": {
+                    "type": "string"
+                  },
+                  "coverage_amount": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "effective_date": {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "expiration_date": {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "policy_number": {
+                    "type": "string"
+                  },
+                  "policy_type": {
+                    "type": "string"
+                  },
+                  "renewal_contact": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "active",
+                      "pending",
+                      "expired",
+                      "cancelled"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "policy_type",
+                  "carrier",
+                  "policy_number",
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create an insurance policy tracking row."
+      }
+    },
+    "/marketing/insurance/policies/{policy_id_val}": {
+      "patch": {
+        "operationId": "api_marketing_insurance_policies_patch_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "policy_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "carrier": {
+                    "type": "string"
+                  },
+                  "coverage_amount": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "effective_date": {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "expiration_date": {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "policy_number": {
+                    "type": "string"
+                  },
+                  "policy_type": {
+                    "type": "string"
+                  },
+                  "renewal_contact": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "active",
+                      "pending",
+                      "expired",
+                      "cancelled"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Patch an insurance policy tracking row."
+      }
+    },
+    "/marketing/leads": {
+      "get": {
+        "operationId": "api_marketing_leads_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "channel",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List marketing leads with optional channel/status filters."
+      },
+      "post": {
+        "operationId": "api_marketing_leads_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "campaign": {
+                    "type": "string"
+                  },
+                  "channel": {
+                    "type": "string"
+                  },
+                  "child_age_group": {
+                    "type": "string"
+                  },
+                  "email": {
+                    "type": "string"
+                  },
+                  "family_name": {
+                    "type": "string"
+                  },
+                  "inquiry_date": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "phone": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "new",
+                      "contacted",
+                      "tour_scheduled",
+                      "converted",
+                      "lost"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "family_name",
+                  "channel",
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a marketing lead row."
+      }
+    },
+    "/marketing/reviews": {
+      "get": {
+        "operationId": "api_marketing_reviews_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List review requests/events with optional platform/status filters."
+      },
+      "post": {
+        "operationId": "api_marketing_reviews_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "family_name": {
+                    "type": "string"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "platform": {
+                    "enum": [
+                      "google",
+                      "yelp",
+                      "facebook",
+                      "other"
+                    ],
+                    "type": "string"
+                  },
+                  "rating": {
+                    "maximum": 5,
+                    "minimum": 1,
+                    "type": "number"
+                  },
+                  "received_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "requested_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "review_url": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "requested",
+                      "received",
+                      "flagged"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "family_name",
+                  "platform",
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a parent review request/event row."
+      }
+    },
+    "/menu/{date}": {
+      "get": {
+        "operationId": "api_menu_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return the full daily menu for *date* (YYYY-MM-DD) including parent comments."
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi_spec_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Return OpenAPI specification for the current API surface."
+      }
+    },
+    "/ops/workflows/freshness": {
+      "get": {
+        "operationId": "api_ops_workflows_freshness_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return freshness status for critical automated workflows."
+      }
+    },
+    "/ops/workflows/heartbeat": {
+      "post": {
+        "operationId": "api_ops_workflow_heartbeat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "error": {
+                    "type": "string"
+                  },
+                  "ran_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "success",
+                      "error",
+                      "running",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  "workflow_key": {
+                    "type": "string"
+                  },
+                  "workflow_name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "workflow_key",
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Record (upsert) workflow run heartbeat keyed by workflow_key."
+      }
+    },
+    "/parent-chat/{child_name}": {
+      "get": {
+        "operationId": "api_parent_chat_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return the linked parent Telegram chat_id for *child_name* (used by n8n)."
+      }
+    },
+    "/pickup/events": {
+      "get": {
+        "operationId": "api_pickup_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "child_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "approved",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List pickup events for audit review with optional filters."
+      },
+      "post": {
+        "operationId": "api_pickup_event_post",
+        "parameters": [
+          {
+            "description": "Optional replay key (TTL: 86400s). Same key+payload returns cached response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "approved": {
+                    "type": "boolean"
+                  },
+                  "approved_by_staff": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "child_id": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "denial_code": {
+                    "type": "string"
+                  },
+                  "denial_reason": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "override_approved_by": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "override_reason": {
+                    "type": "string"
+                  },
+                  "override_used": {
+                    "type": "boolean"
+                  },
+                  "requested_by_guardian": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "timestamp": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "child_id",
+                  "approved"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a pickup verification/audit event."
+      }
+    },
+    "/pickup/verify": {
+      "post": {
+        "operationId": "api_pickup_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "child_id": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "guardian_id": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "pickup_password": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "child_id",
+                  "guardian_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Verify whether a guardian is allowed to pick up a child."
+      }
+    },
+    "/portfolio/{child_name}": {
+      "get": {
+        "operationId": "api_portfolio_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return portfolio moments for *child_name*."
+      }
+    },
+    "/regulatory/ask": {
+      "get": {
+        "operationId": "api_regulatory_ask_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Answer a regulatory question using ingested rules first, then static fallback."
+      }
+    },
+    "/regulatory/audit/risk-assessments": {
+      "get": {
+        "operationId": "api_regulatory_audit_risk_assessments_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List persisted regulatory risk assessments."
+      }
+    },
+    "/regulatory/audit/risk-assessments/run": {
+      "post": {
+        "operationId": "api_regulatory_audit_risk_assessment_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "category": {
+                    "type": "string"
+                  },
+                  "jurisdiction": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "open",
+                      "in_progress",
+                      "resolved",
+                      "closed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Compute and persist a regulatory risk assessment row."
+      }
+    },
+    "/regulatory/audit/risk-summary": {
+      "get": {
+        "operationId": "api_regulatory_audit_risk_summary_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Compute and return regulatory audit risk snapshot."
+      }
+    },
+    "/regulatory/rules": {
+      "get": {
+        "operationId": "api_regulatory_rules_list_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List regulatory rules with optional filters."
+      }
+    },
+    "/regulatory/rules/ingest": {
+      "post": {
+        "operationId": "api_regulatory_rules_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "deactivate_previous": {
+                    "type": "boolean"
+                  },
+                  "dry_run": {
+                    "type": "boolean"
+                  },
+                  "ingest_batch_id": {
+                    "type": "string"
+                  },
+                  "rules": {
+                    "items": {
+                      "properties": {
+                        "active": {
+                          "type": "boolean"
+                        },
+                        "category": {
+                          "type": "string"
+                        },
+                        "effective_date": {
+                          "type": "string"
+                        },
+                        "jurisdiction": {
+                          "type": "string"
+                        },
+                        "keywords": {
+                          "type": "string"
+                        },
+                        "rule_key": {
+                          "type": "string"
+                        },
+                        "rule_text": {
+                          "type": "string"
+                        },
+                        "source_document": {
+                          "type": "string"
+                        },
+                        "source_url": {
+                          "type": "string"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "rule_key",
+                        "version",
+                        "category",
+                        "jurisdiction",
+                        "title"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Ingest one or many versioned regulatory rules with active-version traceability."
+      }
+    },
+    "/regulatory/rules/{rule_key}/versions": {
+      "get": {
+        "operationId": "api_regulatory_rule_versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rule_key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return all versions of a regulatory rule key."
+      }
+    },
+    "/report/{child_name}": {
+      "get": {
+        "operationId": "api_report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return today's daily report for *child_name* as JSON."
+      }
+    },
+    "/schedule/{date}": {
+      "get": {
+        "operationId": "api_daily_schedule_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return the full daily schedule for *date* (nap, outdoor, class, craft times)."
+      }
+    },
+    "/subsidy/claims": {
+      "get": {
+        "operationId": "api_subsidy_claims_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "claim_month",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "program",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List subsidy claims with optional month/status/program filters."
+      },
+      "post": {
+        "operationId": "api_subsidy_claim_create_post",
+        "parameters": [
+          {
+            "description": "Optional replay key (TTL: 86400s). Same key+payload returns cached response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "child": {
+                    "oneOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "claim_month": {
+                    "type": "string"
+                  },
+                  "expected_amount": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "notes": {
+                    "type": "string"
+                  },
+                  "paid_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "program": {
+                    "type": "string"
+                  },
+                  "received_amount": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "submitted",
+                      "paid",
+                      "variance"
+                    ],
+                    "type": "string"
+                  },
+                  "submitted_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "claim_month",
+                  "child",
+                  "program",
+                  "expected_amount"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a subsidy claim record."
+      }
+    },
+    "/subsidy/reconcile/{claim_id_val}": {
+      "post": {
+        "operationId": "api_subsidy_reconcile_claim_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional replay key (TTL: 86400s). Same key+payload returns cached response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "notes": {
+                    "type": "string"
+                  },
+                  "paid_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "received_amount": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "submitted",
+                      "paid",
+                      "variance"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Reconcile a claim by updating received amount and computed variance/status."
+      }
+    },
+    "/subsidy/reconciliation/summary": {
+      "get": {
+        "operationId": "api_subsidy_reconciliation_summary_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return reconciliation totals and variance buckets for subsidy claims."
+      }
+    },
+    "/substitutes": {
+      "get": {
+        "operationId": "api_substitutes_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return the contingency teacher roster, optionally filtered by ?room=."
+      }
+    },
+    "/vaccines": {
+      "get": {
+        "operationId": "api_vaccines_summary_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return vaccine compliance summary for all children."
+      }
+    },
+    "/vaccines/{child_name}": {
+      "get": {
+        "operationId": "api_vaccines_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "child_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return health history (vaccines, allergies, doctors) for *child_name*."
+      }
+    },
+    "/waitlist": {
+      "get": {
+        "operationId": "api_waitlist_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "followup_due",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_dir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return waitlist entries, optionally filtered by status."
+      },
+      "post": {
+        "operationId": "api_waitlist_add_post",
+        "parameters": [
+          {
+            "description": "Optional replay key (TTL: 86400s). Same key+payload returns cached response.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "child_first_name": {
+                    "type": "string"
+                  },
+                  "child_last_name": {
+                    "type": "string"
+                  },
+                  "conversion_score": {
+                    "type": "number"
+                  },
+                  "desired_start_date": {
+                    "format": "date",
+                    "type": "string"
+                  },
+                  "follow_up_sla_hours": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "last_contact_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "next_follow_up_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "priority_score": {
+                    "type": "number"
+                  },
+                  "retention_risk_score": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "new",
+                      "contacted",
+                      "tour_scheduled",
+                      "offered",
+                      "enrolled",
+                      "lost"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "child_first_name",
+                  "child_last_name",
+                  "desired_start_date",
+                  "status"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create a waitlist entry."
+      }
+    },
+    "/waitlist/followups/due": {
+      "get": {
+        "operationId": "api_waitlist_followups_due_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return waitlist entries with due follow-ups."
+      }
+    },
+    "/waitlist/pipeline/summary": {
+      "get": {
+        "operationId": "api_waitlist_pipeline_summary_get",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Return waitlist pipeline, conversion, SLA, and retention-risk summary."
+      }
+    },
+    "/waitlist/scoring/run": {
+      "post": {
+        "operationId": "api_waitlist_scoring_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "open_only": {
+                    "type": "boolean"
+                  },
+                  "persist": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Compute conversion/risk scores for waitlist entries; optionally persist."
+      }
+    },
+    "/waitlist/{entry_id_val}": {
+      "patch": {
+        "operationId": "api_waitlist_patch_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "minProperties": 1,
+                "properties": {
+                  "conversion_score": {
+                    "type": "number"
+                  },
+                  "follow_up_sla_hours": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "next_follow_up_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "priority_score": {
+                    "type": "number"
+                  },
+                  "retention_risk_score": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "new",
+                      "contacted",
+                      "tour_scheduled",
+                      "offered",
+                      "enrolled",
+                      "lost"
+                    ],
+                    "type": "string"
+                  },
+                  "tour_date": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Patch a waitlist entry."
+      }
+    },
+    "/waitlist/{entry_id_val}/advance": {
+      "post": {
+        "operationId": "api_waitlist_advance_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "follow_up_sla_hours": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "retention_risk_score": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "enum": [
+                      "new",
+                      "contacted",
+                      "tour_scheduled",
+                      "offered",
+                      "enrolled",
+                      "lost"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Advance waitlist status to next stage or requested status."
+      }
+    },
+    "/waitlist/{entry_id_val}/automation-action": {
+      "post": {
+        "operationId": "api_waitlist_automation_action_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "action_key": {
+                    "type": "string"
+                  },
+                  "escalate": {
+                    "type": "boolean"
+                  },
+                  "escalation_reason": {
+                    "type": "string"
+                  },
+                  "follow_up_sla_hours": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "next_follow_up_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "nudge_sent": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "action_key"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Apply a validated automation action patch to a waitlist entry."
+      }
+    },
+    "/waitlist/{entry_id_val}/schedule-tour": {
+      "post": {
+        "operationId": "api_waitlist_schedule_tour_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entry_id_val",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "follow_up_sla_hours": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "next_follow_up_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "tour_date": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tour_date"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Schedule a waitlist tour and set follow-up SLA."
+      }
+    },
+    "/webhook/announcement": {
+      "post": {
+        "operationId": "webhook_announcement_post",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Broadcast an announcement to all linked parents via Telegram (called by n8n)."
+      }
+    },
+    "/webhook/meeting": {
+      "post": {
+        "operationId": "webhook_meeting_post",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Notify a parent via Telegram when a parent-teacher meeting is scheduled (called by n8n)."
+      }
+    },
+    "/webhook/menu": {
+      "post": {
+        "operationId": "webhook_menu_post",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Notify all linked parents that today's menu has been posted (called by n8n)."
+      }
+    },
+    "/webhook/milestone": {
+      "post": {
+        "operationId": "webhook_milestone_post",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Notify a parent via Telegram when a new milestone is recorded (called by n8n)."
+      }
+    },
+    "/webhook/moment": {
+      "post": {
+        "operationId": "webhook_moment_post",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Validation Error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Notify a parent via Telegram when a new portfolio moment is added (called by n8n)."
+      }
+    }
+  },
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}

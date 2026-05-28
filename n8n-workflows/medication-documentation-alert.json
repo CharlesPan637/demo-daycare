@@ -1,0 +1,164 @@
+{
+  "name": "Medication Documentation Alert — 12:30PM Weekdays",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 12 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "12:30 PM Weekdays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{`http://bot:8097/compliance/medication-logs?date=${new Date().toISOString().slice(0,10)}`}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        }
+      },
+      "id": "get-logs-1",
+      "name": "Get Medication Logs (Today)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const logs = $input.first().json.logs || [];\nif (!logs.length) {\n  return [{json: {notify: false, message: '✅ No medication logs for today.'}}];\n}\nconst missing = [];\nfor (const item of logs) {\n  const f = item.fields || {};\n  const administered = Boolean(f.administered);\n  if (!administered) {\n    missing.push({id: item.id, child: f.child, medication_name: f.medication_name || 'n/a', dosage: f.dosage || 'n/a', reason: f.reason || ''});\n  }\n}\nif (!missing.length) {\n  return [{json: {notify: false, message: `✅ Medication documentation complete. Logged entries: ${logs.length}.`}}];\n}\nlet msg = '💊 *Medication Documentation Alert*\\n\\n';\nmsg += `Unadministered records: ${missing.length}\\n\\n`;\nfor (const row of missing.slice(0, 20)) {\n  msg += `🔴 Log #${row.id} | Child #${row.child}\\n`;\n  msg += `${row.medication_name} (${row.dosage})\\n`;\n  if (row.reason) msg += `Reason: ${row.reason}\\n`;\n  msg += '\\n';\n}\nreturn [{json: {notify: true, message: msg, missing_count: missing.length}}];"
+      },
+      "id": "find-gaps-1",
+      "name": "Find Medication Gaps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "notify-true",
+              "leftValue": "={{$json.notify}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-notify-1",
+      "name": "Should Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{$env.TELEGRAM_ALERT_CHAT_ID}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json.message}}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        }
+      },
+      "id": "send-telegram-1",
+      "name": "Send Medication Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 250]
+    }
+  ],
+  "connections": {
+    "12:30 PM Weekdays": {
+      "main": [
+        [
+          {
+            "node": "Get Medication Logs (Today)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Medication Logs (Today)": {
+      "main": [
+        [
+          {
+            "node": "Find Medication Gaps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Medication Gaps": {
+      "main": [
+        [
+          {
+            "node": "Should Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Notify?": {
+      "main": [
+        [
+          {
+            "node": "Send Medication Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "callerPolicy": "workflowsFromSameFolder"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

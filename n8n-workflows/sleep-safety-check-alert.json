@@ -1,0 +1,164 @@
+{
+  "name": "Sleep Safety Check Alert — 2:30PM Weekdays",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 14 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "2:30 PM Weekdays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{`http://bot:8097/compliance/sleep-safety-checks?date=${new Date().toISOString().slice(0,10)}`}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        }
+      },
+      "id": "get-checks-1",
+      "name": "Get Sleep Safety Checks (Today)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const checks = $input.first().json.checks || [];\nif (!checks.length) {\n  return [{json: {notify: true, message: '😴 *Sleep Safety Alert*\\n\\nNo sleep safety checks logged today.'}}];\n}\nconst flagged = [];\nfor (const item of checks) {\n  const f = item.fields || {};\n  const status = String(f.status || '').toLowerCase();\n  if (status === 'attention' || status === 'incident') {\n    flagged.push({id: item.id, child: f.child, status, notes: f.notes || ''});\n  }\n}\nif (!flagged.length) {\n  return [{json: {notify: false, message: `✅ Sleep safety checks complete. Logged entries: ${checks.length}.`}}];\n}\nlet msg = '😴 *Sleep Safety Alert*\\n\\n';\nmsg += `Flagged checks: ${flagged.length}\\n\\n`;\nfor (const row of flagged.slice(0, 20)) {\n  msg += `🔴 Check #${row.id} | Child #${row.child} | ${row.status}\\n`;\n  if (row.notes) msg += `${row.notes}\\n`;\n  msg += '\\n';\n}\nreturn [{json: {notify: true, message: msg, flagged_count: flagged.length}}];"
+      },
+      "id": "find-issues-1",
+      "name": "Find Sleep Safety Issues",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "notify-true",
+              "leftValue": "={{$json.notify}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-notify-1",
+      "name": "Should Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{$env.TELEGRAM_ALERT_CHAT_ID}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json.message}}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        }
+      },
+      "id": "send-telegram-1",
+      "name": "Send Sleep Safety Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 250]
+    }
+  ],
+  "connections": {
+    "2:30 PM Weekdays": {
+      "main": [
+        [
+          {
+            "node": "Get Sleep Safety Checks (Today)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Sleep Safety Checks (Today)": {
+      "main": [
+        [
+          {
+            "node": "Find Sleep Safety Issues",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Sleep Safety Issues": {
+      "main": [
+        [
+          {
+            "node": "Should Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Notify?": {
+      "main": [
+        [
+          {
+            "node": "Send Sleep Safety Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "callerPolicy": "workflowsFromSameFolder"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

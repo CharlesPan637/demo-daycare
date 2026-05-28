@@ -1,0 +1,258 @@
+{
+  "name": "Regulatory Rules Ingestion — Mondays 8:45AM",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "8:45 AM Mondays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "exec-trigger-1",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date().toISOString().slice(0, 10);\nconst version = `state-demo-${today}`;\nconst batchId = `reg-ingest-${Date.now()}`;\nreturn [{json: {\n  ingest_batch_id: batchId,\n  deactivate_previous: true,\n  rules: [\n    {\n      rule_key: 'ratio_infant',\n      version,\n      category: 'Staff-Child Ratios',\n      jurisdiction: 'state-demo',\n      title: 'Infant staffing ratio',\n      summary: 'Infant rooms require 1:4 ratio and max group size of 8.',\n      rule_text: 'For children 0-18 months, one qualified staff per four children; group size must not exceed eight.',\n      keywords: 'ratio,infant,baby,0-18 months,group size',\n      source_url: 'https://licensing.example.gov/childcare/ratios',\n      source_document: 'State Childcare Ratio Bulletin',\n      effective_date: today,\n      active: true\n    },\n    {\n      rule_key: 'incident_reporting',\n      version,\n      category: 'Compliance',\n      jurisdiction: 'state-demo',\n      title: 'Incident documentation and notification',\n      summary: 'Incidents must be documented within 24h; severe incidents reported to licensing within 24h.',\n      rule_text: 'Providers must document all incidents within 24 hours. Serious incidents requiring emergency services must be reported to licensing authority within 24 hours.',\n      keywords: 'incident,injury,report,parent notify,24 hours',\n      source_url: 'https://licensing.example.gov/childcare/incidents',\n      source_document: 'Incident Reporting Rulebook',\n      effective_date: today,\n      active: true\n    },\n    {\n      rule_key: 'safe_sleep',\n      version,\n      category: 'Health & Safety',\n      jurisdiction: 'state-demo',\n      title: 'Infant safe sleep requirements',\n      summary: 'Infants placed on back in approved crib; no loose bedding; checks documented.',\n      rule_text: 'Infants must be placed on their backs in safety-approved cribs with no loose bedding or toys. Sleep checks must be documented at required intervals.',\n      keywords: 'sleep,crib,infant,safe sleep,checklist',\n      source_url: 'https://licensing.example.gov/childcare/safe-sleep',\n      source_document: 'Safe Sleep Standard',\n      effective_date: today,\n      active: true\n    }\n  ]\n}}];"
+      },
+      "id": "build-payload-1",
+      "name": "Build Rules Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/regulatory/rules/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}"
+      },
+      "id": "ingest-rules-1",
+      "name": "Ingest Regulatory Rules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/regulatory/audit/risk-assessments/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { jurisdiction: 'state-demo', category: 'weekly_ingestion', status: 'open' } }}"
+      },
+      "id": "run-risk-1",
+      "name": "Run Regulatory Risk Assessment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        900,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $input.first().json || {};\nconst risk = payload.snapshot || {};\nlet message = '📚 *Regulatory Ingestion Weekly Check*\\n\\n';\nmessage += `Assessment ID: ${payload.assessment_id || 'n/a'}\\n`;\nmessage += `🛡 Risk score: ${risk.risk_score ?? 'n/a'} (${risk.risk_level || 'unknown'})\\n`;\nmessage += `Signals — rules: ${risk.signals?.active_rules ?? 0}, med logs today: ${risk.signals?.medication_logs_today ?? 0}, sanitation today: ${risk.signals?.sanitation_checks_today ?? 0}, sleep checks today: ${risk.signals?.sleep_safety_checks_today ?? 0}`;\nreturn [{json: {message}}];"
+      },
+      "id": "format-message-1",
+      "name": "Format Alert Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{$env.TELEGRAM_ALERT_CHAT_ID}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json.message}}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        }
+      },
+      "id": "send-telegram-1",
+      "name": "Send Regulatory Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "continueOnFail": true,
+      "position": [
+        1340,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/ops/workflows/heartbeat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { workflow_key: 'regulatory_rules_ingestion_weekly', workflow_name: 'Regulatory Rules Ingestion — Mondays 8:45AM', status: 'success', ran_at: new Date().toISOString() } }}"
+      },
+      "id": "heartbeat-1",
+      "name": "Record Workflow Heartbeat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "continueOnFail": true,
+      "position": [
+        1540,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "8:45 AM Mondays": {
+      "main": [
+        [
+          {
+            "node": "Build Rules Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Rules Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Rules Payload": {
+      "main": [
+        [
+          {
+            "node": "Ingest Regulatory Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Regulatory Rules": {
+      "main": [
+        [
+          {
+            "node": "Run Regulatory Risk Assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Regulatory Risk Assessment": {
+      "main": [
+        [
+          {
+            "node": "Format Alert Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert Message": {
+      "main": [
+        [
+          {
+            "node": "Send Regulatory Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Regulatory Alert": {
+      "main": [
+        [
+          {
+            "node": "Record Workflow Heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "callerPolicy": "workflowsFromSameFolder"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1"
+}

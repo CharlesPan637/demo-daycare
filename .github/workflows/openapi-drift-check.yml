@@ -1,0 +1,24 @@
+name: OpenAPI Drift Check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  openapi-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bot dependencies
+        run: pip install -r bot/requirements.txt
+
+      - name: Check OpenAPI snapshot drift
+        run: ./scripts/check_openapi_drift.sh
