@@ -38,6 +38,32 @@ pickup_code=$(curl -s -o /tmp/daily_pickup_events.out -w '%{http_code}' -H "X-AP
 pickup_count=$(jq -r '.count // -1' /tmp/daily_pickup_events.out 2>/dev/null || echo -1)
 pickup_verified_count=$(jq -r '[.events[]?.fields | select((.document_type // "") != "" and (.document_id_last4 // "") != "" and (.presented_name // "") != "")] | length' /tmp/daily_pickup_events.out 2>/dev/null || echo -1)
 pickup_verified_min=${PICKUP_VERIFIED_MIN:-1}
+parent_scope_probe=$(curl -s -H "Authorization: Bearer $GRIST_API_KEY" "http://127.0.0.1:8096/api/docs/$GRIST_DOC_ID/tables/Table2/records")
+parent_scope_child_name=$(printf "%s" "$parent_scope_probe" | jq -r '
+  [ .records[]?.fields ] as $rows
+  | ($rows | map(.first_name // "")) as $all_names
+  | [ $rows[] | select((.parent_chat_id // "") != "") | .first_name // "" ] as $linked_names
+  | ([ $linked_names[] as $n | select(([$all_names[] | select(. == $n)] | length) == 1) | $n ][0]) // ""
+' 2>/dev/null || echo "")
+parent_scope_chat_id=$(printf "%s" "$parent_scope_probe" | jq -r '
+  [ .records[]?.fields ] as $rows
+  | ($rows | map(.first_name // "")) as $all_names
+  | [ $rows[] | select((.parent_chat_id // "") != "") | .first_name // "" ] as $linked_names
+  | ([ $linked_names[] as $n | select(([$all_names[] | select(. == $n)] | length) == 1) | $n ][0]) as $unique_name
+  | ([ $rows[] | select((.first_name // "") == ($unique_name // "")) | .parent_chat_id // "" ][0]) // ""
+' 2>/dev/null || echo "")
+parent_scope_child_slug=$(printf "%s" "$parent_scope_child_name" | tr '[:upper:]' '[:lower:]')
+if [[ -n "$parent_scope_child_slug" ]]; then
+  parent_scope_deny_code=$(curl -s -o /tmp/daily_parent_scope_deny.out -w '%{http_code}' -H "X-API-Key: $API_KEY" "$BASE_URL/portfolio/$parent_scope_child_slug?strict_parent_scope=true&limit=1")
+  parent_scope_allow_code=$(curl -s -o /tmp/daily_parent_scope_allow.out -w '%{http_code}' -H "X-API-Key: $API_KEY" -H "X-Parent-Chat-Id: $parent_scope_chat_id" "$BASE_URL/portfolio/$parent_scope_child_slug?strict_parent_scope=true&limit=1")
+  parent_scope_portfolio_code=$(curl -s -o /tmp/daily_parent_scope_portfolio.out -w '%{http_code}' -H "X-API-Key: $API_KEY" -H "X-Parent-Chat-Id: $parent_scope_chat_id" "$BASE_URL/portfolio/$parent_scope_child_slug?strict_parent_scope=true&limit=1")
+  parent_scope_portfolio_limit=$(jq -r '.limit // -1' /tmp/daily_parent_scope_portfolio.out 2>/dev/null || echo -1)
+else
+  parent_scope_deny_code="NA"
+  parent_scope_allow_code="NA"
+  parent_scope_portfolio_code="NA"
+  parent_scope_portfolio_limit="-1"
+fi
 
 echo "[daily_ops] health_status=$health_code"
 echo "[daily_ops] unauth_waitlist_status=$unauth_code"
@@ -57,6 +83,11 @@ echo "[daily_ops] pickup_events_status=$pickup_code"
 echo "[daily_ops] pickup_events_count=$pickup_count"
 echo "[daily_ops] pickup_verified_metadata_count=$pickup_verified_count"
 echo "[daily_ops] pickup_verified_min=$pickup_verified_min"
+echo "[daily_ops] parent_scope_probe_child=$parent_scope_child_name"
+echo "[daily_ops] parent_scope_deny_status=$parent_scope_deny_code"
+echo "[daily_ops] parent_scope_allow_status=$parent_scope_allow_code"
+echo "[daily_ops] parent_scope_portfolio_status=$parent_scope_portfolio_code"
+echo "[daily_ops] parent_scope_portfolio_limit=$parent_scope_portfolio_limit"
 
 if [[ "$health_code" != "200" ]]; then
   echo "[daily_ops] FAIL: health expected 200"
@@ -119,6 +150,22 @@ if [[ "$pickup_count" == "-1" || "$pickup_verified_count" == "-1" ]]; then
 fi
 if (( pickup_verified_count < pickup_verified_min )); then
   echo "[daily_ops] FAIL: insufficient pickup events with verification metadata"
+  exit 1
+fi
+if [[ -z "$parent_scope_child_slug" || -z "$parent_scope_chat_id" ]]; then
+  echo "[daily_ops] FAIL: no linked child found for parent scope guardrail"
+  exit 1
+fi
+if [[ "$parent_scope_deny_code" != "403" ]]; then
+  echo "[daily_ops] FAIL: strict parent scope deny check expected 403"
+  exit 1
+fi
+if [[ "$parent_scope_allow_code" != "200" ]]; then
+  echo "[daily_ops] FAIL: strict parent scope allow check expected 200"
+  exit 1
+fi
+if [[ "$parent_scope_portfolio_code" != "200" || "$parent_scope_portfolio_limit" != "1" ]]; then
+  echo "[daily_ops] FAIL: strict parent scope portfolio check expected 200 with limit=1"
   exit 1
 fi
 
