@@ -58,10 +58,10 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 - Voice transcription flow exists.
 - Evidence: `bot/transcribe.py:23`
 
-## 11) Marketing/SEO/reviews/insurance/competitive positioning — **PARTIAL (new baseline)**
-- Marketing leads, reviews, insurance policies, competitor snapshots APIs and weekly pulse workflow are now implemented.
-- Remaining gap: deeper SEO analytics and campaign attribution intelligence.
-- Evidence: `bot/app.py:3827`, `bot/grist_client.py:1069`, `scripts/migrate_p0_tables.py:276`, `n8n-workflows/marketing-pulse-weekly.json:1`
+## 11) Marketing/SEO/reviews/insurance/competitive positioning — **PARTIAL (improved)**
+- Marketing leads, reviews, insurance policies, competitor snapshots APIs, weekly pulse workflow, and attribution summary endpoint are implemented.
+- Remaining gap: deeper SEO analytics maturity and richer multi-touch attribution intelligence.
+- Evidence: `bot/app.py:3827`, `bot/app.py:4045`, `bot/grist_client.py:1069`, `scripts/migrate_p0_tables.py:276`, `n8n-workflows/marketing-pulse-weekly.json:1`
 
 ---
 
