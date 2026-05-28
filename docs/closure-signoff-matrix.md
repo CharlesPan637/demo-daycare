@@ -13,9 +13,10 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 
 ## Updated Closure Matrix
 
-## 1) Staffing visibility & callout response — **PARTIAL**
-- Coverage/ratio + substitute finder exist, but no predictive risk/overtime/schedule optimization.
-- Evidence: `bot/app.py:2684`, `n8n-workflows/staffing-coverage-check.json:56`
+## 1) Staffing visibility & callout response — **PARTIAL (improved)**
+- Coverage/ratio + substitute finder exist, and predictive coverage/overtime risk is now exposed via protected API (`GET /staffing/risk-summary`).
+- Remaining gap: schedule optimization and automated substitute assignment are not yet implemented.
+- Evidence: `bot/app.py:2684`, `bot/app.py:3630`, `tests/test_p0_regression.py:372`, `n8n-workflows/staffing-coverage-check.json:56`
 
 ## 2) Parent updates (reports/photos/milestones) — **PARTIAL**
 - Core reporting/portfolio exists; sensitive Telegram reads now use private-chat and staff/linked-child checks.

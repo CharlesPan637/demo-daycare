@@ -369,6 +369,24 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(updated.get("status"), "updated")
         self.assertAlmostEqual(updated.get("sum"), 1.0, places=4)
 
+    def test_staffing_risk_summary(self):
+        self.mod.get_room_ratios = lambda: [
+            {"id": 1, "fields": {"room_name": "Infant", "staff_child_ratio": "1:4", "current_enrolled": 12, "scheduled_staff": 3}},
+            {"id": 2, "fields": {"room_name": "Toddler", "staff_child_ratio": "1:6", "current_enrolled": 12, "scheduled_staff": 2}},
+        ]
+
+        resp = self.client.get("/staffing/risk-summary?callout_rate=0.2", headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("total_rooms"), 2)
+        self.assertEqual(payload.get("coverage_gap_rooms"), 0)
+        self.assertEqual(payload.get("predicted_gap_rooms"), 2)
+        self.assertEqual(payload.get("risk_buckets", {}).get("high"), 0)
+        self.assertEqual(payload.get("risk_buckets", {}).get("medium"), 2)
+
+        bad = self.client.get("/staffing/risk-summary?callout_rate=1.5", headers=self._auth_headers())
+        self.assertEqual(bad.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
