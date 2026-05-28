@@ -86,7 +86,7 @@
       {
         "parameters": {
           "method": "POST",
-          "url": "https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+          "url": "={{ 'https://api.telegram.org/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
           "sendBody": true,
           "bodyParameters": {
             "parameters": [
