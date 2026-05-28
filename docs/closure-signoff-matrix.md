@@ -147,3 +147,13 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
 - Validation:
   - `python3 -m py_compile bot/regulatory_rag.py bot/app.py` => PASS
   - `scripts/daily_ops_check.sh` => PASS
+
+## Verification Addendum (2026-05-28T18:20:21Z)
+- Added deeper staffing optimization constraints in `/staffing/risk-summary`:
+  - donor minimum buffer units
+  - max rebalances per donor
+  - max shift-extension units per room with escalation action for residual gaps
+- Validation:
+  - `python3 -m py_compile bot/app.py` => PASS
+  - `scripts/daily_ops_check.sh` => PASS
+  - `python3 -m unittest discover -s tests -p 'test_p0_regression.py' -q` => BLOCKED (local deps missing: `flask`)

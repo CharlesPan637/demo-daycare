@@ -3916,6 +3916,11 @@ def api_staffing_risk_summary():
     if not isinstance(rooms, list):
         rooms = []
 
+    # Constraint guardrails for schedule optimization actions.
+    donor_min_buffer_units = max(0, int(_to_float(os.getenv("STAFFING_DONOR_MIN_BUFFER_UNITS", "0"))))
+    max_rebalances_per_donor = max(1, int(_to_float(os.getenv("STAFFING_MAX_REBALANCES_PER_DONOR", "2"))))
+    max_shift_extension_units_per_room = max(1, int(_to_float(os.getenv("STAFFING_MAX_SHIFT_EXTENSION_UNITS_PER_ROOM", "1"))))
+
     high_risk_count = 0
     medium_risk_count = 0
     coverage_gap_rooms = 0
@@ -3999,9 +4004,12 @@ def api_staffing_risk_summary():
 
     # Build simple schedule optimization actions using room surplus before callouts.
     donor_pool: dict[str, float] = {}
+    donor_rebalance_count: dict[str, int] = {}
     for row in room_results:
         surplus = max(0.0, _to_float(row.get("scheduled_staff")) - _to_float(row.get("required_staff")))
-        donor_pool[str(row.get("room_name"))] = float(math.floor(surplus))
+        donor_name = str(row.get("room_name"))
+        donor_pool[donor_name] = float(math.floor(surplus))
+        donor_rebalance_count[donor_name] = 0
 
     rebalancing_actions = 0
     shift_extension_actions = 0
@@ -4012,10 +4020,17 @@ def api_staffing_risk_summary():
         room_name = str(row.get("room_name"))
         needed = int(math.ceil(remaining_gap))
         while needed > 0:
-            donor_name = next((name for name, units in donor_pool.items() if name != room_name and units >= 1), "")
+            donor_name = next((
+                name
+                for name, units in donor_pool.items()
+                if name != room_name
+                and units > donor_min_buffer_units
+                and donor_rebalance_count.get(name, 0) < max_rebalances_per_donor
+            ), "")
             if not donor_name:
                 break
             donor_pool[donor_name] -= 1
+            donor_rebalance_count[donor_name] = donor_rebalance_count.get(donor_name, 0) + 1
             needed -= 1
             rebalancing_actions += 1
             row["schedule_actions"].append({
@@ -4026,13 +4041,22 @@ def api_staffing_risk_summary():
                 "reason": "predicted coverage shortfall after callouts",
             })
         if needed > 0:
+            extend_units = min(needed, max_shift_extension_units_per_room)
             shift_extension_actions += 1
             row["schedule_actions"].append({
                 "action": "extend_shift",
                 "room": room_name,
-                "staff_units": needed,
+                "staff_units": extend_units,
                 "reason": "insufficient substitute and rebalancing coverage",
             })
+            needed -= extend_units
+            if needed > 0:
+                row["schedule_actions"].append({
+                    "action": "escalate_staffing_gap",
+                    "room": room_name,
+                    "uncovered_staff_units": needed,
+                    "reason": "shift-extension cap reached; requires manager escalation",
+                })
 
     total_rooms = len(room_results)
     return jsonify({
@@ -4047,6 +4071,11 @@ def api_staffing_risk_summary():
         "schedule_optimization": {
             "rebalancing_actions": rebalancing_actions,
             "shift_extension_actions": shift_extension_actions,
+            "constraints": {
+                "donor_min_buffer_units": donor_min_buffer_units,
+                "max_rebalances_per_donor": max_rebalances_per_donor,
+                "max_shift_extension_units_per_room": max_shift_extension_units_per_room,
+            },
         },
         "risk_buckets": {
             "high": high_risk_count,
