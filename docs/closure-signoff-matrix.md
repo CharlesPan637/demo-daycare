@@ -59,9 +59,9 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 - Evidence: `bot/transcribe.py:23`
 
 ## 11) Marketing/SEO/reviews/insurance/competitive positioning — **PARTIAL (improved)**
-- Marketing leads, reviews, insurance policies, competitor snapshots APIs, weekly pulse workflow, attribution summary endpoint, and SEO summary endpoint are implemented and operationalized with live data.
-- Remaining gap: richer multi-touch attribution intelligence and external channel spend/engagement ingestion.
-- Evidence: `bot/app.py:3827`, `bot/app.py:4045`, `bot/app.py:4137`, `bot/grist_client.py:1069`, `scripts/migrate_p0_tables.py:276`, `n8n-workflows/marketing-pulse-weekly.json:1`, `mktgPulseExec26A execution 2026-05-28T17:09:45Z`
+- Marketing leads, reviews, insurance policies, competitor snapshots APIs, weekly pulse workflow, attribution summary endpoint, SEO summary endpoint, and spend-ingestion + CPL/CPA summary endpoints are implemented and operationalized with live data.
+- Remaining gap: richer multi-touch attribution intelligence and external attribution-model weighting.
+- Evidence: `bot/app.py:3827`, `bot/app.py:4045`, `bot/app.py:4137`, `bot/app.py:3992`, `bot/grist_client.py:1069`, `scripts/migrate_p0_tables.py:276`, `n8n-workflows/marketing-pulse-weekly.json:1`, `mktgPulseExec26A execution 2026-05-28T17:09:45Z`, `/marketing/attribution/spend-summary live check 2026-05-28`
 
 ---
 
