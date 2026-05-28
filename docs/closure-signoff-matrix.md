@@ -18,10 +18,11 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 - Remaining gap: deeper forward-looking scheduling optimization is still limited.
 - Evidence: `bot/app.py:2684`, `bot/app.py:3630`, `tests/test_p0_regression.py:372`, `n8n-workflows/staffing-coverage-check.json:56`
 
-## 2) Parent updates (reports/photos/milestones) — **PARTIAL**
-- Core reporting/portfolio exists; sensitive Telegram reads now use private-chat and staff/linked-child checks.
-- Remaining gap: parent-facing UX depth and richer controls are still limited.
-- Evidence: `bot/app.py:2490`, `bot/app.py:2998`, `bot/app.py:2295`
+## 2) Parent updates (reports/photos/milestones) — **PARTIAL (improved)**
+- Core reporting/portfolio exists; sensitive Telegram reads use private-chat and staff/linked-child checks.
+- API parent-read hardening now supports strict parent scope (`strict_parent_scope=true` + `X-Parent-Chat-Id`) with audit logs on `/report`, `/portfolio`, and `/book`.
+- Remaining gap: parent-facing UX depth and richer self-service controls are still limited.
+- Evidence: `bot/app.py:563`, `bot/app.py:593`, `bot/app.py:603`, `bot/app.py:556`, `tests/test_p0_regression.py:45`
 
 ## 3) Custody/unauthorized pickup safety — **PARTIAL (improved)**
 - Guardian linking + pickup verification/audit plus identity/document authorization pre-check are implemented (`POST /pickup/authorization/check`), including name matching, legal restriction enforcement, and court-order override requirements.

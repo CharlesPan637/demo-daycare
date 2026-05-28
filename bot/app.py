@@ -560,12 +560,57 @@ def health():
     return jsonify({"status": "ok", "grist": GRIST_AVAILABLE, "ai": AI_AVAILABLE})
 
 
+def _parent_scope_guard(child: dict, route_name: str):
+    """Optionally enforce parent-child scope with audit logs for sensitive read routes."""
+    strict_parent_scope = _to_bool(request.args.get("strict_parent_scope", False))
+    parent_chat_header = str(request.headers.get("X-Parent-Chat-Id", "")).strip()
+    linked_parent_chat = str(child.get("fields", {}).get("parent_chat_id", "")).strip()
+    child_id_val = child.get("id")
+
+    if not parent_chat_header:
+        logger.info(
+            "parent_read_audit route=%s child_id=%s strict_scope=%s parent_chat_id=missing linked_parent_chat_id=%s outcome=%s",
+            route_name,
+            child_id_val,
+            strict_parent_scope,
+            linked_parent_chat or "missing",
+            "denied_missing_header" if strict_parent_scope else "bypass_no_header",
+        )
+        if strict_parent_scope:
+            return jsonify({"error": "X-Parent-Chat-Id header required when strict_parent_scope=true"}), 403
+        return None
+
+    if not linked_parent_chat or parent_chat_header != linked_parent_chat:
+        logger.warning(
+            "parent_read_audit route=%s child_id=%s strict_scope=%s parent_chat_id=%s linked_parent_chat_id=%s outcome=denied_mismatch",
+            route_name,
+            child_id_val,
+            strict_parent_scope,
+            parent_chat_header,
+            linked_parent_chat or "missing",
+        )
+        return jsonify({"error": "parent scope denied for child"}), 403
+
+    logger.info(
+        "parent_read_audit route=%s child_id=%s strict_scope=%s parent_chat_id=%s linked_parent_chat_id=%s outcome=allowed",
+        route_name,
+        child_id_val,
+        strict_parent_scope,
+        parent_chat_header,
+        linked_parent_chat,
+    )
+    return None
+
+
 @app.route("/report/<child_name>", methods=["GET"])
 def api_report(child_name):
     """Return today's daily report for *child_name* as JSON."""
     child = find_child(child_name)
     if not child:
         return jsonify({"error": f"Child '{child_name}' not found"}), 404
+    scope_denied = _parent_scope_guard(child, "/report/<child_name>")
+    if scope_denied is not None:
+        return scope_denied
     today = datetime.now().strftime("%Y-%m-%d")
     report = get_daily_report(child_id(child), today)
     if not report:
@@ -596,8 +641,14 @@ def api_portfolio(child_name):
     child = find_child(child_name)
     if not child:
         return jsonify({"error": f"Child '{child_name}' not found"}), 404
-    moments = get_portfolio_moments(child_id(child))
+    scope_denied = _parent_scope_guard(child, "/portfolio/<child_name>")
+    if scope_denied is not None:
+        return scope_denied
+    limit = int(_to_float(request.args.get("limit", 20)))
+    limit = max(1, min(limit, 100))
+    moments = get_portfolio_moments(child_id(child), limit=limit)
     return jsonify({"child": get_child_field(child, "first_name"),
+                    "limit": limit,
                     "moments": [m["fields"] for m in moments]})
 
 @app.route("/book/<child_name>", methods=["GET"])
@@ -606,6 +657,9 @@ def api_book(child_name):
     child = find_child(child_name)
     if not child:
         return jsonify({"error": f"Child '{child_name}' not found"}), 404
+    scope_denied = _parent_scope_guard(child, "/book/<child_name>")
+    if scope_denied is not None:
+        return scope_denied
     from flask import request as flask_request
     month = flask_request.args.get("month", datetime.now().strftime("%Y-%m"))
     book = get_monthly_book(child_id(child), month)
@@ -1342,6 +1396,17 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
 }
 
 QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
+    ("GET", "/report/<child_name>"): [
+        {"name": "strict_parent_scope", "schema": {"type": "boolean"}},
+    ],
+    ("GET", "/portfolio/<child_name>"): [
+        {"name": "strict_parent_scope", "schema": {"type": "boolean"}},
+        {"name": "limit", "schema": {"type": "integer", "minimum": 1, "maximum": 100}},
+    ],
+    ("GET", "/book/<child_name>"): [
+        {"name": "strict_parent_scope", "schema": {"type": "boolean"}},
+        {"name": "month", "schema": {"type": "string"}},
+    ],
     ("GET", "/waitlist"): [
         {"name": "status", "schema": {"type": "string"}},
         {"name": "followup_due", "schema": {"type": "boolean"}},
