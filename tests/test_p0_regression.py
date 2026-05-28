@@ -374,6 +374,11 @@ class P0RegressionTest(unittest.TestCase):
             {"id": 1, "fields": {"room_name": "Infant", "staff_child_ratio": "1:4", "current_enrolled": 12, "scheduled_staff": 3}},
             {"id": 2, "fields": {"room_name": "Toddler", "staff_child_ratio": "1:6", "current_enrolled": 12, "scheduled_staff": 2}},
         ]
+        self.mod.find_substitutes = lambda day_of_week, room_qual: (
+            [{"name": "Alex Sub", "phone": "555-0101", "rooms_qualified": room_qual, "is_on_call": True}]
+            if room_qual == "Infant"
+            else []
+        )
 
         resp = self.client.get("/staffing/risk-summary?callout_rate=0.2", headers=self._auth_headers())
         self.assertEqual(resp.status_code, 200)
@@ -383,6 +388,13 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(payload.get("predicted_gap_rooms"), 2)
         self.assertEqual(payload.get("risk_buckets", {}).get("high"), 0)
         self.assertEqual(payload.get("risk_buckets", {}).get("medium"), 2)
+        self.assertEqual(payload.get("recommended_substitutes_total"), 1)
+        self.assertEqual(payload.get("unresolved_predicted_gap_rooms"), 1)
+
+        rooms = {row["room_name"]: row for row in payload.get("rooms", [])}
+        self.assertEqual(rooms["Infant"]["recommended_substitute_count"], 1)
+        self.assertEqual(rooms["Infant"]["remaining_gap_after_recommendations"], 0.0)
+        self.assertEqual(rooms["Toddler"]["recommended_substitute_count"], 0)
 
         bad = self.client.get("/staffing/risk-summary?callout_rate=1.5", headers=self._auth_headers())
         self.assertEqual(bad.status_code, 400)
