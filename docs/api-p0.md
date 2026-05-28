@@ -519,3 +519,38 @@ Response `200`:
   }
 }
 ```
+
+### Attribution weight controls
+`GET /marketing/attribution/weights`
+
+Response `200`:
+```json
+{
+  "first_touch": 0.4,
+  "middle_touch_total": 0.2,
+  "last_touch": 0.4,
+  "sum": 1.0
+}
+```
+
+`POST /marketing/attribution/weights`
+
+Request:
+```json
+{
+  "first_touch": 0.3,
+  "middle_touch_total": 0.4,
+  "last_touch": 0.3
+}
+```
+
+Response `200`:
+```json
+{
+  "status": "updated",
+  "first_touch": 0.3,
+  "middle_touch_total": 0.4,
+  "last_touch": 0.3,
+  "sum": 1.0
+}
+```

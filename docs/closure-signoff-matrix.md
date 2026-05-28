@@ -58,7 +58,7 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 - Voice transcription flow exists.
 - Evidence: `bot/transcribe.py:23`
 
-## 11) Marketing/SEO/reviews/insurance/competitive positioning — **PARTIAL (improved)**
+## 11) Marketing/SEO/reviews/insurance/competitive positioning — **ADDRESSED (baseline+)**
 - Marketing leads, reviews, insurance policies, competitor snapshots APIs, weekly pulse workflow, attribution summary endpoint, SEO summary endpoint, spend-ingestion + CPL/CPA summary endpoints, MoM spend trend endpoint, touchpoint ingestion, and multi-touch weighted attribution endpoint are implemented and operationalized with live data.
 - Remaining gap: advanced attribution science depth (cross-session identity stitching, offline conversion reconciliation, and custom weight calibration).
 - Evidence: `bot/app.py:3827`, `bot/app.py:4045`, `bot/app.py:4137`, `bot/app.py:3992`, `bot/app.py:4106`, `bot/app.py:4240`, `bot/grist_client.py:1069`, `scripts/migrate_p0_tables.py:276`, `n8n-workflows/marketing-pulse-weekly.json:1`, `mktgPulseExec26A execution 2026-05-28T17:25:23Z`, `/marketing/attribution/spend-summary live check 2026-05-28`, `/marketing/attribution/spend-trend live check 2026-05-28`, `/marketing/attribution/multi-touch live check 2026-05-28`
@@ -87,4 +87,15 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 ## Final Strict Verdict (as of 2026-05-28)
 **NOT READY** to claim "all pain points addressed."
 
-Rationale: P0 blockers are closed, but open P1/P2 capabilities remain.
+Rationale: P0 blockers are closed and item 11 baseline is now addressed, but open P1/P2 capabilities remain in non-marketing domains.
+
+## Formal Verification Statement (2026-05-28T17:30:23Z)
+- Operational verification pass completed with live environment checks.
+- `scripts/daily_ops_check.sh` => PASS (includes multi-touch QA guards).
+- `tests/test_p0_regression.py` => PASS (11 tests).
+- Workflow evidence:
+  - `mktgPulseWkly26A` activeVersion updated with spend + multi-touch blocks.
+  - `mktgPulseExec26A` execution success with Telegram delivery and heartbeat updates.
+- Formal sign-off status:
+  - P0 operational release: **SIGNED OFF**.
+  - Strict closure ("all pain points addressed"): **NOT READY**.
