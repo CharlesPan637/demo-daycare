@@ -109,3 +109,11 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
   - `staffing_status=200`
   - `staffing_unresolved_predicted_gap_rooms=0`
   - `staffing_unresolved_max=0`
+
+## Verification Addendum (2026-05-28T17:53:00Z)
+- Added pickup verification metadata guardrail to daily ops checks and re-ran live validation.
+- Result: **PASS**
+  - `pickup_events_status=200`
+  - `pickup_events_count=5`
+  - `pickup_verified_metadata_count=1`
+  - `pickup_verified_min=1`
