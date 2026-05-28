@@ -70,6 +70,26 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [850, 350]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/ops/workflows/heartbeat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "X-API-Key", "value": "={{$env.API_KEY}}"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { workflow_key: 'staffing_coverage_check', workflow_name: 'Morning Staffing Coverage Check — 7:30AM', status: 'success', ran_at: new Date().toISOString() } }}"
+      },
+      "id": "heartbeat-1",
+      "name": "Record Workflow Heartbeat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 350]
     }
   ],
   "connections": {
@@ -84,6 +104,9 @@
     },
     "Analyze Coverage & Ratios": {
       "main": [[{"node": "Format Staff Alert", "type": "main", "index": 0}]]
+    },
+    "Format Staff Alert": {
+      "main": [[{"node": "Record Workflow Heartbeat", "type": "main", "index": 0}]]
     }
   },
   "settings": {"callerPolicy": "workflowsFromSameFolder"},

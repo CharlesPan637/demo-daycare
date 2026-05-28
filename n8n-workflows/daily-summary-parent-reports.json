@@ -79,6 +79,27 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
       "position": [850, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/ops/workflows/heartbeat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "X-API-Key", "value": "={{$env.API_KEY}}"}
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { workflow_key: 'daily_summary_parent_reports', workflow_name: 'Daily Summary — 4PM Parent Reports', status: 'success', ran_at: new Date().toISOString() } }}"
+      },
+      "id": "heartbeat-1",
+      "name": "Record Workflow Heartbeat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "continueOnFail": true,
+      "position": [1050, 400]
     }
   ],
   "connections": {
@@ -90,6 +111,9 @@
     },
     "Format Parent Messages": {
       "main": [[{"node": "Send to Parent via Telegram", "type": "main", "index": 0}]]
+    },
+    "Send to Parent via Telegram": {
+      "main": [[{"node": "Record Workflow Heartbeat", "type": "main", "index": 0}]]
     },
     "4:00 PM Weekdays": {
       "main": [[{"node": "Get All Active Children", "type": "main", "index": 0}, {"node": "Get Today's Reports", "type": "main", "index": 0}]]

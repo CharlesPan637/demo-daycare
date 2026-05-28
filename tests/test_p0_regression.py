@@ -542,7 +542,7 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(payload.get("risk_buckets", {}).get("high"), 0)
         self.assertEqual(payload.get("risk_buckets", {}).get("medium"), 2)
         self.assertEqual(payload.get("recommended_substitutes_total"), 1)
-        self.assertEqual(payload.get("unresolved_predicted_gap_rooms"), 1)
+        self.assertEqual(payload.get("unresolved_predicted_gap_rooms"), 0)
         self.assertEqual(payload.get("schedule_optimization", {}).get("rebalancing_actions"), 0)
         self.assertEqual(payload.get("schedule_optimization", {}).get("shift_extension_actions"), 1)
 

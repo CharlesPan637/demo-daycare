@@ -445,6 +445,20 @@ docker stats --format "table {{.Name}}\t{{.MemUsage}}"
 
 # Check bot health (API layer)
 curl -s http://127.0.0.1:8097/health
+
+# Check critical workflow freshness (requires API key)
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:8097/ops/workflows/freshness
+# Returns stale_count and per-workflow age/threshold.
+# On first rollout only, seed initial heartbeats once:
+# for k in daily_summary_parent_reports staffing_coverage_check subsidy_deadline_alert subsidy_reconciliation_alert autopay_due_invoices waitlist_followup_sla_alert enrollment_forecast_monthly regulatory_rules_ingestion_weekly; do \
+#   curl -s -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+#   -d "{\"workflow_key\":\"$k\",\"workflow_name\":\"$k\",\"status\":\"success\"}" \
+#   http://127.0.0.1:8097/ops/workflows/heartbeat >/dev/null; \
+# done
+
+# Daily ops smoke check (auth + access policy matrix)
+/home/claude/demo-daycare/scripts/daily_ops_check.sh
+# Includes: scripts/verify_command_access_matrix.py
 ```
 
 ### 9.3 Backing Up Data

@@ -3946,7 +3946,7 @@ def api_staffing_risk_summary():
 
         enrolled = max(0.0, _to_float(fields.get("current_enrolled", 0)))
         scheduled_staff = max(0.0, _to_float(fields.get("scheduled_staff", 0)))
-        required_staff = max(1.0, math.ceil(enrolled / ratio_den) if enrolled > 0 else 1.0)
+        required_staff = max(0.0, math.ceil(enrolled / ratio_den) if enrolled > 0 else 0.0)
         coverage_gap = max(0.0, required_staff - scheduled_staff)
         expected_callouts = round(scheduled_staff * callout_rate, 2)
         predicted_available = max(0.0, scheduled_staff - expected_callouts)
@@ -3981,9 +3981,6 @@ def api_staffing_risk_summary():
                 })
         recommended_substitutes_total += len(recommendations)
         resolved_gap = max(0.0, predicted_gap - len(recommendations))
-        if predicted_gap > 0 and resolved_gap > 0:
-            unresolved_predicted_gap_rooms += 1
-
         room_results.append({
             "room_name": room_name,
             "staff_child_ratio": ratio_raw,
@@ -4057,6 +4054,20 @@ def api_staffing_risk_summary():
                     "uncovered_staff_units": needed,
                     "reason": "shift-extension cap reached; requires manager escalation",
                 })
+
+        # Recompute unresolved gap after optimization actions are applied.
+        final_remaining_gap = max(
+            0.0,
+            _to_float(row.get("remaining_gap_after_recommendations"))
+            - sum(
+                _to_float(action.get("staff_units", 0))
+                for action in row.get("schedule_actions", [])
+                if str(action.get("action")) in {"rebalance_staff", "extend_shift"}
+            ),
+        )
+        row["remaining_gap_after_optimization"] = round(final_remaining_gap, 2)
+        if final_remaining_gap > 0:
+            unresolved_predicted_gap_rooms += 1
 
     total_rooms = len(room_results)
     return jsonify({

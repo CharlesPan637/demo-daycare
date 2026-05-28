@@ -5,6 +5,9 @@
 - [ ] `cd /home/claude/demo-daycare`
 - [ ] `docker compose config` returns no errors.
 - [ ] `.env` contains required keys: `API_KEY`, `STAFF_CHAT_IDS`, `GRIST_API_KEY`, `GRIST_DOC_ID`, `TELEGRAM_BOT_TOKEN`.
+- [ ] For key rotation windows, set optional keys:
+  - [ ] `API_KEY_NEXT=<new_key>`
+  - [ ] `API_KEY_NEXT_ACTIVE_UNTIL=<ISO datetime, e.g. 2026-06-01T18:00:00Z>`
 - [ ] Backup current compose/env before changes:
   - [ ] `cp docker-compose.yml docker-compose.yml.bak.$(date +%Y%m%d-%H%M%S)`
   - [ ] `cp .env .env.bak.$(date +%Y%m%d-%H%M%S)`
@@ -58,3 +61,23 @@ Rollback immediately if any of the following occur after rollout:
 - [ ] Smoke checks passed.
 - [ ] No critical errors in `docker compose logs --tail=200 bot`.
 - [ ] Team notified of rollout status and rollback point.
+
+## 7) API Key Rotation Runbook (P1-06)
+
+- [ ] Prepare new key in `.env`:
+  - [ ] Keep current `API_KEY` unchanged.
+  - [ ] Set `API_KEY_NEXT` to the new key.
+  - [ ] Set `API_KEY_NEXT_ACTIVE_UNTIL` to an explicit UTC expiry time.
+- [ ] Reload service:
+  - [ ] `docker compose up -d bot`
+- [ ] Test both keys during the window:
+  - [ ] `curl -s -i -H "X-API-Key: $API_KEY" http://127.0.0.1:8097/waitlist?limit=1`
+  - [ ] `curl -s -i -H "X-API-Key: $API_KEY_NEXT" http://127.0.0.1:8097/waitlist?limit=1`
+  - [ ] Expect both to return `200`.
+- [ ] Cut over immediately when ready:
+  - [ ] Promote new key into `API_KEY`.
+  - [ ] Clear `API_KEY_NEXT` and `API_KEY_NEXT_ACTIVE_UNTIL`.
+  - [ ] `docker compose up -d bot`
+- [ ] Verify old key is revoked:
+  - [ ] `curl -s -i -H "X-API-Key: <old_key>" http://127.0.0.1:8097/waitlist?limit=1`
+  - [ ] Expect `401`.
