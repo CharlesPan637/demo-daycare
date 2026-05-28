@@ -1,0 +1,306 @@
+{
+  "id": "cR7sK2mN9vL4pTxQ",
+  "name": "Waitlist Stage Playbook — 10:30AM Weekdays",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 10 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "10:30 AM Weekdays",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/waitlist/scoring/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { persist: true, open_only: true } }}"
+      },
+      "id": "get-waitlist-1",
+      "name": "Score Waitlist",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/waitlist/orchestration/run",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { persist: true, open_only: true } }}"
+      },
+      "id": "run-orchestration-1",
+      "name": "Run Waitlist Orchestration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.first().json.results || [];\nconst isoNow = new Date().toISOString();\nconst byTrigger = {high_risk: 0, medium_risk: 0, low_risk: 0};\nfor (const row of rows) {\n  const risk = Number(row.retention_risk_score || 0);\n  if (risk >= 70) byTrigger.high_risk += 1;\n  else if (risk >= 40) byTrigger.medium_risk += 1;\n  else byTrigger.low_risk += 1;\n}\n\nif (!rows.length) {\n  const heartbeat = {\n    workflow_key: 'waitlist_stage_playbook_daily',\n    workflow_name: 'Waitlist Stage Playbook — 10:30AM Weekdays',\n    status: 'success',\n    ran_at: isoNow,\n    error: ''\n  };\n  return [{json: {notify: false, message: '✅ Waitlist stage playbook: no stage actions due today.', summary: {actions_due: 0, by_trigger: byTrigger}, actions: [], heartbeat}}];\n}\n\nconst priorityOrder = {high_risk_recovery: 0, medium_risk_nudge: 1, offer_close_sequence: 2, tour_confirm_sequence: 3, nurture_low_risk: 4};\nconst sorted = [...rows].sort((a, b) => (priorityOrder[a.action_key] ?? 9) - (priorityOrder[b.action_key] ?? 9));\n\nlet msg = '🧭 *Waitlist Stage Playbook*\\n\\n';\nmsg += `Actions due: ${sorted.length}\\n`;\nmsg += `Risk bands — high: ${byTrigger.high_risk}, medium: ${byTrigger.medium_risk}, low: ${byTrigger.low_risk}\\n\\n`;\nfor (const row of sorted.slice(0, 20)) {\n  const badge = row.retention_risk_score >= 70 ? '🔴' : (row.retention_risk_score >= 40 ? '🟠' : '🟢');\n  msg += `${badge} #${row.id} | ${row.status} | ${row.action_key}\\n`;\n  msg += `SLA ${row.follow_up_sla_hours}h | next: ${row.next_follow_up_at}\\n\\n`;\n}\n\nconst heartbeat = {\n  workflow_key: 'waitlist_stage_playbook_daily',\n  workflow_name: 'Waitlist Stage Playbook — 10:30AM Weekdays',\n  status: 'success',\n  ran_at: isoNow,\n  error: `actions=${sorted.length};high_risk=${byTrigger.high_risk};medium_risk=${byTrigger.medium_risk};low_risk=${byTrigger.low_risk}`\n};\n\nconst actions = sorted.map((row) => ({\n  entry_id: row.id,\n  action_key: row.action_key,\n  patch: {\n    escalate: row.action_key === 'high_risk_recovery',\n    escalation_reason: row.action_key === 'high_risk_recovery' ? 'retention_risk_high' : '',\n    nudge_sent: true,\n    follow_up_sla_hours: row.follow_up_sla_hours,\n    next_follow_up_at: row.next_follow_up_at,\n  }\n}));\n\nreturn [{json: {notify: true, message: msg, summary: {actions_due: sorted.length, by_trigger: byTrigger}, actions, heartbeat}}];"
+      },
+      "id": "build-playbook-1",
+      "name": "Build Stage Playbook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "notify-true",
+              "leftValue": "={{$json.notify}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-notify-1",
+      "name": "Should Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{`https://api.telegram.org/bot${$env.TELEGRAM_BOT_TOKEN}/sendMessage`}}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{$env.TELEGRAM_ALERT_CHAT_ID}}"
+            },
+            {
+              "name": "text",
+              "value": "={{$json.message}}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "Markdown"
+            }
+          ]
+        }
+      },
+      "id": "send-telegram-1",
+      "name": "Send Stage Playbook Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1340,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.first().json.actions || [];\nif (!rows.length) {\n  return [{json: {skip: true}}];\n}\nreturn rows.map((row) => ({json: row}));"
+      },
+      "id": "explode-actions-1",
+      "name": "Explode Actions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{`http://bot:8097/waitlist/${$json.entry_id}/automation-action`}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { action_key: $json.action_key, escalate: $json.patch.escalate, escalation_reason: $json.patch.escalation_reason, nudge_sent: $json.patch.nudge_sent, follow_up_sla_hours: $json.patch.follow_up_sla_hours } }}"
+      },
+      "id": "apply-action-1",
+      "name": "Apply Automation Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1560,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://bot:8097/ops/workflows/heartbeat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{$env.API_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.heartbeat}}"
+      },
+      "id": "heartbeat-1",
+      "name": "Record Workflow Heartbeat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1340,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "10:30 AM Weekdays": {
+      "main": [
+        [
+          {
+            "node": "Score Waitlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Waitlist": {
+      "main": [
+        [
+          {
+            "node": "Run Waitlist Orchestration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Waitlist Orchestration": {
+      "main": [
+        [
+          {
+            "node": "Build Stage Playbook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Stage Playbook": {
+      "main": [
+        [
+          {
+            "node": "Should Notify?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Record Workflow Heartbeat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Notify?": {
+      "main": [
+        [
+          {
+            "node": "Send Stage Playbook Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Explode Actions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Explode Actions": {
+      "main": [
+        [
+          {
+            "node": "Apply Automation Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "callerPolicy": "workflowsFromSameFolder"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "2"
+}

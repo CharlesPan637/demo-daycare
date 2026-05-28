@@ -40,9 +40,9 @@ Assessment mode: strict readiness gate for "all pain points addressed"
 
 ## 6) Enrollment CRM & waitlist — **PARTIAL (improved)**
 - Waitlist lifecycle + stage advance + tour scheduling + follow-up SLA automation + daily conversion/risk scoring are in place.
-- Stage/risk-based multi-step conversion orchestration is now implemented (`POST /waitlist/orchestration/run`) with live coverage visibility (`GET /waitlist/orchestration/coverage`).
+- Stage/risk-based multi-step conversion orchestration is implemented (`POST /waitlist/orchestration/run`) with live coverage visibility (`GET /waitlist/orchestration/coverage`) and integrated into the daily stage playbook workflow execution path.
 - Remaining gap: deeper long-horizon retention intelligence is still limited.
-- Evidence: `bot/app.py:1881`, `bot/app.py:1956`, `bot/app.py:1999`, `bot/app.py:2030`, `bot/app.py:3679`, `bot/app.py:3763`, `tests/test_p0_regression.py:312`, `n8n-workflows/waitlist-stage-playbook-daily.json:28`
+- Evidence: `bot/app.py:1881`, `bot/app.py:1956`, `bot/app.py:1999`, `bot/app.py:2030`, `bot/app.py:3679`, `bot/app.py:3763`, `tests/test_p0_regression.py:312`, `n8n-workflows/waitlist-stage-playbook-daily.json:54`
 
 ## 7) Forecasting & intelligence — **PARTIAL (improved)**
 - Adds anomaly signals, churn proxy, capacity utilization, and breakeven estimate using configured/live assumptions.
