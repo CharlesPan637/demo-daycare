@@ -4177,7 +4177,7 @@ def api_regulatory_rules_ingest():
 
 @app.route("/regulatory/ask", methods=["GET"])
 def api_regulatory_ask():
-    """Answer a regulatory question using ingested rules first, then static fallback."""
+    """Answer a regulatory question using ingested rules."""
     query = str(request.args.get("q", "")).strip()
     if not query:
         return jsonify({"error": "q is required"}), 400
@@ -5535,7 +5535,7 @@ async def observe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Failed to notify parent for %s: %s", child_name, e)
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Answer a free-text question using the AI client, regulatory RAG, or dashboard fallbacks."""
+    """Answer a free-text question using the AI client, dashboard snapshots, or regulatory RAG."""
     if not context.args:
         await update.message.reply_text("Usage: /ask <your question about daycare policies or curriculum>")
         return
