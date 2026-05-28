@@ -318,6 +318,17 @@ def main() -> int:
             {"id": "impressions", "type": "Numeric"},
             {"id": "notes", "type": "Text"},
         ],
+        "Marketing_Touchpoints": [
+            {"id": "lead_id", "type": "Numeric"},
+            {"id": "channel", "type": "Text"},
+            {"id": "campaign", "type": "Text"},
+            {"id": "touch_type", "type": "Text"},
+            {"id": "occurred_at", "type": "DateTime"},
+            {"id": "utm_source", "type": "Text"},
+            {"id": "utm_medium", "type": "Text"},
+            {"id": "utm_campaign", "type": "Text"},
+            {"id": "notes", "type": "Text"},
+        ],
     }
 
     known = existing_table_names()
