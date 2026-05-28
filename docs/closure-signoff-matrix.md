@@ -141,3 +141,9 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
   - Workflow: `cR7sK2mN9vL4pTxQ` (`Waitlist Stage Playbook — 10:30AM Weekdays`)
   - Orchestration + action application nodes executed and updated waitlist records.
   - Telegram alert node switched to plain text (no Markdown parse failures).
+
+## Verification Addendum (2026-05-28T18:18:34Z)
+- Removed static regulatory fallback dataset and answer path; regulatory Q&A is now dynamic-rule-only.
+- Validation:
+  - `python3 -m py_compile bot/regulatory_rag.py bot/app.py` => PASS
+  - `scripts/daily_ops_check.sh` => PASS
