@@ -3638,6 +3638,9 @@ def api_staffing_risk_summary():
     coverage_gap_rooms = 0
     predicted_gap_rooms = 0
     overtime_risk_rooms = 0
+    recommended_substitutes_total = 0
+    unresolved_predicted_gap_rooms = 0
+    day_of_week = datetime.utcnow().strftime("%A")
     room_results: list[dict[str, Any]] = []
 
     for room in rooms:
@@ -3677,6 +3680,22 @@ def api_staffing_risk_summary():
             predicted_gap_rooms += 1
             overtime_risk_rooms += 1
 
+        recommended_needed = int(math.ceil(predicted_gap))
+        recommendations: list[dict[str, Any]] = []
+        if recommended_needed > 0:
+            candidates = find_substitutes(day_of_week, room_name)
+            for candidate in candidates[:recommended_needed]:
+                recommendations.append({
+                    "name": candidate.get("name", ""),
+                    "phone": candidate.get("phone", ""),
+                    "rooms_qualified": candidate.get("rooms_qualified", ""),
+                    "is_on_call": _to_bool(candidate.get("is_on_call", False)),
+                })
+        recommended_substitutes_total += len(recommendations)
+        resolved_gap = max(0.0, predicted_gap - len(recommendations))
+        if predicted_gap > 0 and resolved_gap > 0:
+            unresolved_predicted_gap_rooms += 1
+
         room_results.append({
             "room_name": room_name,
             "staff_child_ratio": ratio_raw,
@@ -3687,6 +3706,9 @@ def api_staffing_risk_summary():
             "expected_callouts": expected_callouts,
             "predicted_available_staff": round(predicted_available, 2),
             "predicted_gap_after_callouts": round(predicted_gap, 2),
+            "recommended_substitute_count": len(recommendations),
+            "recommended_substitutes": recommendations,
+            "remaining_gap_after_recommendations": round(resolved_gap, 2),
             "overtime_risk_score": round(overtime_risk_score, 3),
             "risk_level": risk_level,
         })
@@ -3699,6 +3721,8 @@ def api_staffing_risk_summary():
         "coverage_gap_rooms": coverage_gap_rooms,
         "predicted_gap_rooms": predicted_gap_rooms,
         "overtime_risk_rooms": overtime_risk_rooms,
+        "recommended_substitutes_total": recommended_substitutes_total,
+        "unresolved_predicted_gap_rooms": unresolved_predicted_gap_rooms,
         "risk_buckets": {
             "high": high_risk_count,
             "medium": medium_risk_count,
