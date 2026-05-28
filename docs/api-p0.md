@@ -7,6 +7,19 @@ Authentication:
 
 Base URL (local): `http://127.0.0.1:8097`
 
+## Parent Read Scope Controls
+- Sensitive parent-read routes support optional strict scope enforcement:
+  - `GET /report/{child_name}`
+  - `GET /portfolio/{child_name}`
+  - `GET /book/{child_name}`
+- Query parameter: `strict_parent_scope=true`
+- Header required when strict mode is enabled: `X-Parent-Chat-Id: <linked_parent_chat_id>`
+- Behavior:
+  - missing header in strict mode => `403`
+  - mismatched header vs child's linked `parent_chat_id` => `403`
+  - matched header => `200`
+- Additional control on portfolio route: `limit` (1..100)
+
 ## Required Environment Variables
 - `API_KEY`
 - `API_KEY_NEXT` (optional, for rotation window)

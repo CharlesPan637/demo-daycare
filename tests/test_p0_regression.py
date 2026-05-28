@@ -43,6 +43,40 @@ class P0RegressionTest(unittest.TestCase):
         self.assertEqual(payload.get("count"), 1)
         self.assertIn("entries", payload)
 
+    def test_parent_scope_controls_on_report_and_portfolio(self):
+        child = {"id": 1, "fields": {"first_name": "Emma", "last_name": "Stone", "parent_chat_id": "555"}}
+        self.mod.find_child = lambda child_name: child
+        self.mod.get_daily_report = lambda child_id_val, date: {"date": date, "activities_summary": "Good day"}
+        self.mod.get_portfolio_moments = lambda child_id_val, limit=20: [
+            {"id": 1, "fields": {"title": "One"}},
+            {"id": 2, "fields": {"title": "Two"}},
+        ][:limit]
+
+        strict_missing = self.client.get("/report/emma?strict_parent_scope=true", headers=self._auth_headers())
+        self.assertEqual(strict_missing.status_code, 403)
+
+        wrong_parent = self.client.get(
+            "/report/emma?strict_parent_scope=true",
+            headers={**self._auth_headers(), "X-Parent-Chat-Id": "999"},
+        )
+        self.assertEqual(wrong_parent.status_code, 403)
+
+        ok_parent = self.client.get(
+            "/report/emma?strict_parent_scope=true",
+            headers={**self._auth_headers(), "X-Parent-Chat-Id": "555"},
+        )
+        self.assertEqual(ok_parent.status_code, 200)
+        self.assertIn("report", ok_parent.get_json())
+
+        portfolio = self.client.get(
+            "/portfolio/emma?strict_parent_scope=true&limit=1",
+            headers={**self._auth_headers(), "X-Parent-Chat-Id": "555"},
+        )
+        self.assertEqual(portfolio.status_code, 200)
+        body = portfolio.get_json()
+        self.assertEqual(body.get("limit"), 1)
+        self.assertEqual(len(body.get("moments", [])), 1)
+
     def test_pickup_verify_and_events_denied_and_override(self):
         self.mod.get_child_guardian_links = lambda child_id_val: [
             {"id": 77, "fields": {"guardian": 12, "legal_status": "custodial", "pickup_allowed": True, "pickup_password": "1234"}}
