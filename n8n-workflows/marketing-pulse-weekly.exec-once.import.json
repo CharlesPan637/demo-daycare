@@ -83,7 +83,30 @@
       },
       {
         "parameters": {
-          "jsCode": "const d = $items('Get Marketing Dashboard', 0, 0)?.[0]?.json || {};\nconst seo = $items('Get Marketing SEO Summary', 0, 0)?.[0]?.json || {};\n\nconst leads = d.leads || {};\nconst reviews = d.reviews || {};\nconst insurance = d.insurance || {};\nconst comp = d.competitive || {};\n\nconst leadTrend = (seo.lead_trend_by_month || []).slice(-2).map((x) => `${x.month}:${x.count}`).join(', ') || 'n/a';\nconst reviewTrend = (seo.received_review_trend_by_month || []).slice(-2).map((x) => `${x.month}:${x.count}`).join(', ') || 'n/a';\nconst channelMix = (seo.channel_mix || []).slice(0, 3).map((x) => `${x.channel}:${x.lead_count}`).join(', ') || 'n/a';\nconst topCampaign = (seo.campaign_performance || [])[0];\n\nlet msg = '📣 *Marketing Pulse (Weekly)*\\n\\n';\nmsg += `Leads: ${leads.count || 0}\\n`;\nmsg += `Top channels: ${Object.entries(leads.channel_counts || {}).slice(0,3).map(([k,v]) => `${k}:${v}`).join(', ') || 'n/a'}\\n\\n`;\nmsg += `Reviews: ${reviews.count || 0} | Avg rating: ${reviews.average_rating ?? 'n/a'}\\n`;\nmsg += `Review statuses: ${Object.entries(reviews.status_counts || {}).map(([k,v]) => `${k}:${v}`).join(', ') || 'n/a'}\\n\\n`;\nmsg += `Insurance policies: ${insurance.count || 0} | Expiring ≤45d: ${insurance.expiring_within_45_days || 0}\\n`;\nmsg += `Competitive snapshots: ${comp.snapshot_count || 0}\\n\\n`;\nmsg += '*SEO/Attribution Signals*\\n';\nmsg += `Lead trend (2mo): ${leadTrend}\\n`;\nmsg += `Received reviews trend (2mo): ${reviewTrend}\\n`;\nmsg += `Channel mix: ${channelMix}\\n`;\nmsg += `Top campaign: ${topCampaign ? `${topCampaign.campaign} (${Math.round((topCampaign.conversion_rate || 0) * 100)}% conv, ${topCampaign.lead_count} leads)` : 'n/a'}`;\n\nreturn [{json: {message: msg}}];"
+          "method": "GET",
+          "url": "={{ 'http://bot:8097/marketing/attribution/spend-summary?period_month=' + $now.format('yyyy-MM') }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-API-Key",
+                "value": "={{$env.API_KEY}}"
+              }
+            ]
+          }
+        },
+        "id": "get-spend-summary-1",
+        "name": "Get Marketing Spend Summary",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          460,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const d = $items('Get Marketing Dashboard', 0, 0)?.[0]?.json || {};\nconst seo = $items('Get Marketing SEO Summary', 0, 0)?.[0]?.json || {};\nconst spend = $items('Get Marketing Spend Summary', 0, 0)?.[0]?.json || {};\n\nconst leads = d.leads || {};\nconst reviews = d.reviews || {};\nconst insurance = d.insurance || {};\nconst comp = d.competitive || {};\nconst totals = spend.totals || {};\n\nconst leadTrend = (seo.lead_trend_by_month || []).slice(-2).map((x) => `${x.month}:${x.count}`).join(', ') || 'n/a';\nconst reviewTrend = (seo.received_review_trend_by_month || []).slice(-2).map((x) => `${x.month}:${x.count}`).join(', ') || 'n/a';\nconst channelMix = (seo.channel_mix || []).slice(0, 3).map((x) => `${x.channel}:${x.lead_count}`).join(', ') || 'n/a';\nconst topCampaign = (seo.campaign_performance || [])[0];\nconst topSpend = (spend.items || [])[0];\n\nlet msg = '📣 *Marketing Pulse (Weekly)*\\n\\n';\nmsg += `Leads: ${leads.count || 0}\\n`;\nmsg += `Top channels: ${Object.entries(leads.channel_counts || {}).slice(0,3).map(([k,v]) => `${k}:${v}`).join(', ') || 'n/a'}\\n\\n`;\nmsg += `Reviews: ${reviews.count || 0} | Avg rating: ${reviews.average_rating ?? 'n/a'}\\n`;\nmsg += `Review statuses: ${Object.entries(reviews.status_counts || {}).map(([k,v]) => `${k}:${v}`).join(', ') || 'n/a'}\\n\\n`;\nmsg += `Insurance policies: ${insurance.count || 0} | Expiring ≤45d: ${insurance.expiring_within_45_days || 0}\\n`;\nmsg += `Competitive snapshots: ${comp.snapshot_count || 0}\\n\\n`;\nmsg += '*SEO/Attribution Signals*\\n';\nmsg += `Lead trend (2mo): ${leadTrend}\\n`;\nmsg += `Received reviews trend (2mo): ${reviewTrend}\\n`;\nmsg += `Channel mix: ${channelMix}\\n`;\nmsg += `Top campaign: ${topCampaign ? `${topCampaign.campaign} (${Math.round((topCampaign.conversion_rate || 0) * 100)}% conv, ${topCampaign.lead_count} leads)` : 'n/a'}\\n\\n`;\nmsg += '*Spend Efficiency*\\n';\nmsg += `Blended CPL: ${totals.blended_cpl ?? 'n/a'}\\n`;\nmsg += `Blended CPA: ${totals.blended_cpa ?? 'n/a'}\\n`;\nmsg += `Top spend channel: ${topSpend ? `${topSpend.channel}/${topSpend.campaign} ($${topSpend.spend_amount})` : 'n/a'}`;\n\nreturn [{json: {message: msg}}];"
         },
         "id": "format-message-1",
         "name": "Format Pulse Message",
@@ -165,6 +188,11 @@
               "node": "Get Marketing SEO Summary",
               "type": "main",
               "index": 0
+            },
+            {
+              "node": "Get Marketing Spend Summary",
+              "type": "main",
+              "index": 0
             }
           ]
         ]
@@ -181,6 +209,17 @@
         ]
       },
       "Get Marketing SEO Summary": {
+        "main": [
+          [
+            {
+              "node": "Format Pulse Message",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Get Marketing Spend Summary": {
         "main": [
           [
             {
@@ -223,6 +262,11 @@
             },
             {
               "node": "Get Marketing SEO Summary",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Get Marketing Spend Summary",
               "type": "main",
               "index": 0
             }
