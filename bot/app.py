@@ -372,6 +372,8 @@ try:
         update_insurance_policy,
         create_competitor_snapshot,
         get_competitor_snapshots,
+        create_marketing_channel_spend,
+        get_marketing_channel_spend,
     )
     from regulatory_rag import get_regulatory_answer  # noqa: E402
 
@@ -471,6 +473,8 @@ except Exception as e:
     update_insurance_policy = lambda _i, _f: None  # type: ignore[assignment]
     create_competitor_snapshot = lambda _f: None  # type: ignore[assignment]
     get_competitor_snapshots = lambda _n=None: []  # type: ignore[assignment]
+    create_marketing_channel_spend = lambda _f: None  # type: ignore[assignment]
+    get_marketing_channel_spend = lambda _c=None, _ca=None, _pm=None: []  # type: ignore[assignment]
     get_regulatory_answer = lambda _q, dynamic_rules=None: None  # type: ignore[assignment]
 
 # --- AI client ---
@@ -1275,6 +1279,20 @@ REQUEST_VALIDATION_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "notes": {"type": "string"},
         },
     },
+    ("POST", "/marketing/spend"): {
+        "type": "object",
+        "required": ["channel", "period_month", "spend_amount"],
+        "properties": {
+            "channel": {"type": "string"},
+            "campaign": {"type": "string"},
+            "period_month": {"type": "string"},
+            "spend_amount": {"type": "number", "minimum": 0},
+            "currency": {"type": "string"},
+            "clicks": {"type": "integer", "minimum": 0},
+            "impressions": {"type": "integer", "minimum": 0},
+            "notes": {"type": "string"},
+        },
+    },
 }
 
 QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
@@ -1340,6 +1358,11 @@ QUERY_PARAM_SCHEMAS: dict[tuple[str, str], list[dict[str, Any]]] = {
         {"name": "offset", "schema": {"type": "integer", "minimum": 0}},
         {"name": "sort_by", "schema": {"type": "string"}},
         {"name": "sort_dir", "schema": {"type": "string", "enum": ["asc", "desc"]}},
+    ],
+    ("GET", "/marketing/attribution/spend-summary"): [
+        {"name": "period_month", "schema": {"type": "string"}},
+        {"name": "channel", "schema": {"type": "string"}},
+        {"name": "campaign", "schema": {"type": "string"}},
     ],
 }
 
@@ -3975,6 +3998,113 @@ def api_marketing_competitor_snapshots_list():
         "sort_by": controls["sort_by"],
         "sort_dir": controls["sort_dir"],
         "snapshots": paged,
+    })
+
+
+@app.route("/marketing/spend", methods=["POST"])
+def api_marketing_spend_create():
+    """Create a marketing channel spend row used for attribution spend analytics."""
+    data = request.get_json(force=True, silent=True) or {}
+    channel = str(data.get("channel", "")).strip().lower()
+    period_month = str(data.get("period_month", "")).strip()
+    if not channel:
+        return jsonify({"error": "channel is required"}), 400
+    if not re.match(r"^\d{4}-\d{2}$", period_month):
+        return jsonify({"error": "period_month must be YYYY-MM"}), 400
+    spend_amount = _to_float(data.get("spend_amount"))
+    if spend_amount < 0:
+        return jsonify({"error": "spend_amount must be >= 0"}), 400
+
+    payload = {
+        "channel": channel,
+        "campaign": str(data.get("campaign", "")).strip().lower(),
+        "period_month": period_month,
+        "spend_amount": spend_amount,
+        "currency": str(data.get("currency", "USD")).strip().upper() or "USD",
+        "clicks": int(_to_float(data.get("clicks"))) if data.get("clicks") not in (None, "") else None,
+        "impressions": int(_to_float(data.get("impressions"))) if data.get("impressions") not in (None, "") else None,
+        "notes": str(data.get("notes", "")).strip(),
+    }
+    result = create_marketing_channel_spend(payload)
+    if not result:
+        return jsonify({"error": "failed to create marketing spend"}), 500
+    return jsonify({"status": "created", "spend_id": result.get("id")}), 201
+
+
+@app.route("/marketing/attribution/spend-summary", methods=["GET"])
+def api_marketing_attribution_spend_summary():
+    """Return channel/campaign spend efficiency metrics (CPL/CPA)."""
+    period_month = request.args.get("period_month")
+    channel_filter = request.args.get("channel")
+    campaign_filter = request.args.get("campaign")
+
+    spend_rows = get_marketing_channel_spend(
+        channel=channel_filter,
+        campaign=campaign_filter,
+        period_month=period_month,
+    )
+    leads = get_marketing_leads(channel=channel_filter, status=None)
+
+    leads_by_key: dict[tuple[str, str], dict[str, int]] = {}
+    for row in leads:
+        fields = row.get("fields", {})
+        inquiry = str(fields.get("inquiry_date", "")).strip()
+        month = inquiry[:7] if len(inquiry) >= 7 and inquiry[4] == "-" else ""
+        if period_month and month != period_month:
+            continue
+        channel = str(fields.get("channel", "unknown")).strip().lower() or "unknown"
+        campaign = str(fields.get("campaign", "")).strip().lower()
+        if campaign_filter and campaign != str(campaign_filter).strip().lower():
+            continue
+        key = (channel, campaign)
+        bucket = leads_by_key.setdefault(key, {"lead_count": 0, "converted_count": 0})
+        bucket["lead_count"] += 1
+        if str(fields.get("status", "")).strip().lower() == "converted":
+            bucket["converted_count"] += 1
+
+    results: list[dict[str, Any]] = []
+    total_spend = 0.0
+    total_leads = 0
+    total_converted = 0
+    for row in spend_rows:
+        fields = row.get("fields", {})
+        channel = str(fields.get("channel", "unknown")).strip().lower() or "unknown"
+        campaign = str(fields.get("campaign", "")).strip().lower()
+        key = (channel, campaign)
+        lead_count = leads_by_key.get(key, {}).get("lead_count", 0)
+        converted_count = leads_by_key.get(key, {}).get("converted_count", 0)
+        spend_amount = _to_float(fields.get("spend_amount"))
+        cpl = round(spend_amount / lead_count, 2) if lead_count > 0 else None
+        cpa = round(spend_amount / converted_count, 2) if converted_count > 0 else None
+        result = {
+            "channel": channel,
+            "campaign": campaign,
+            "period_month": str(fields.get("period_month", "")),
+            "spend_amount": spend_amount,
+            "currency": str(fields.get("currency", "USD") or "USD"),
+            "lead_count": lead_count,
+            "converted_count": converted_count,
+            "cpl": cpl,
+            "cpa": cpa,
+            "clicks": int(_to_float(fields.get("clicks"))) if fields.get("clicks") not in (None, "") else None,
+            "impressions": int(_to_float(fields.get("impressions"))) if fields.get("impressions") not in (None, "") else None,
+        }
+        results.append(result)
+        total_spend += spend_amount
+        total_leads += lead_count
+        total_converted += converted_count
+
+    return jsonify({
+        "count": len(results),
+        "period_month": period_month,
+        "items": sorted(results, key=lambda x: x["spend_amount"], reverse=True),
+        "totals": {
+            "spend_amount": round(total_spend, 2),
+            "lead_count": total_leads,
+            "converted_count": total_converted,
+            "blended_cpl": round(total_spend / total_leads, 2) if total_leads > 0 else None,
+            "blended_cpa": round(total_spend / total_converted, 2) if total_converted > 0 else None,
+        },
     })
 
 

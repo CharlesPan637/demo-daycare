@@ -389,3 +389,52 @@ Response `200`:
   ]
 }
 ```
+
+### Marketing spend ingestion
+`POST /marketing/spend`
+
+Request:
+```json
+{
+  "channel": "google",
+  "campaign": "summer-2026",
+  "period_month": "2026-04",
+  "spend_amount": 300,
+  "currency": "USD",
+  "clicks": 120,
+  "impressions": 5400
+}
+```
+
+Response `201`:
+```json
+{ "status": "created", "spend_id": 1 }
+```
+
+### Spend efficiency summary (CPL/CPA)
+`GET /marketing/attribution/spend-summary?period_month=2026-04`
+
+Response `200`:
+```json
+{
+  "count": 2,
+  "items": [
+    {
+      "channel": "google",
+      "campaign": "summer-2026",
+      "spend_amount": 300.0,
+      "lead_count": 2,
+      "converted_count": 1,
+      "cpl": 150.0,
+      "cpa": 300.0
+    }
+  ],
+  "totals": {
+    "spend_amount": 420.0,
+    "lead_count": 2,
+    "converted_count": 1,
+    "blended_cpl": 210.0,
+    "blended_cpa": 420.0
+  }
+}
+```

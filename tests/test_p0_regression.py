@@ -261,6 +261,33 @@ class P0RegressionTest(unittest.TestCase):
         self.assertAlmostEqual(campaigns["summer"]["conversion_rate"], 0.5, places=4)
         self.assertAlmostEqual(campaigns["fall"]["conversion_rate"], 1.0, places=4)
 
+    def test_marketing_spend_summary(self):
+        self.mod.get_marketing_leads = lambda channel=None, status=None: [
+            {"id": 1, "fields": {"channel": "google", "campaign": "summer", "status": "converted", "inquiry_date": "2026-04-10T09:00:00"}},
+            {"id": 2, "fields": {"channel": "google", "campaign": "summer", "status": "lost", "inquiry_date": "2026-04-11T09:00:00"}},
+            {"id": 3, "fields": {"channel": "facebook", "campaign": "fall", "status": "converted", "inquiry_date": "2026-04-15T09:00:00"}},
+        ]
+        self.mod.get_marketing_channel_spend = lambda channel=None, campaign=None, period_month=None: [
+            {"id": 10, "fields": {"channel": "google", "campaign": "summer", "period_month": "2026-04", "spend_amount": 300, "currency": "USD"}},
+            {"id": 11, "fields": {"channel": "facebook", "campaign": "fall", "period_month": "2026-04", "spend_amount": 120, "currency": "USD"}},
+        ]
+
+        resp = self.client.get("/marketing/attribution/spend-summary?period_month=2026-04", headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload.get("count"), 2)
+        self.assertAlmostEqual(payload.get("totals", {}).get("spend_amount"), 420.0, places=2)
+        self.assertEqual(payload.get("totals", {}).get("lead_count"), 3)
+        self.assertEqual(payload.get("totals", {}).get("converted_count"), 2)
+        self.assertAlmostEqual(payload.get("totals", {}).get("blended_cpl"), 140.0, places=2)
+        self.assertAlmostEqual(payload.get("totals", {}).get("blended_cpa"), 210.0, places=2)
+
+        items = {f"{row['channel']}:{row['campaign']}": row for row in payload.get("items", [])}
+        self.assertAlmostEqual(items["google:summer"]["cpl"], 150.0, places=2)
+        self.assertAlmostEqual(items["google:summer"]["cpa"], 300.0, places=2)
+        self.assertAlmostEqual(items["facebook:fall"]["cpl"], 120.0, places=2)
+        self.assertAlmostEqual(items["facebook:fall"]["cpa"], 120.0, places=2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

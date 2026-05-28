@@ -24,7 +24,18 @@ TABLE_MAP = {"children": "Table2", "staff": "Table3", "attendance": "Table4",
               "payments": "Payments",
               "waitlist": "Waitlist",
               "subsidy_claims": "Subsidy_Claims",
-              "autopay_attempts": "Autopay_Attempts"}
+              "autopay_attempts": "Autopay_Attempts",
+              "medication_logs": "Medication_Logs",
+              "sanitation_checks": "Sanitation_Checks",
+              "sleep_safety_checks": "Sleep_Safety_Checks",
+              "regulatory_rules": "Regulatory_Rules",
+              "regulatory_risk_assessments": "Regulatory_Risk_Assessments",
+              "workflow_heartbeat": "Workflow_Heartbeat",
+              "marketing_leads": "Marketing_Leads",
+              "review_requests": "Review_Requests",
+              "insurance_policies": "Insurance_Policies",
+              "competitor_snapshots": "Competitor_Snapshots",
+              "marketing_channel_spend": "Marketing_Channel_Spend"}
 
 
 def _as_grist_id(value: int | str | None) -> int | str | None:
@@ -869,3 +880,319 @@ def update_waitlist_entry(entry_id_val: int | str, fields: dict) -> dict | None:
     """Patch a waitlist entry."""
     return _api("PATCH", f"/tables/{TABLE_MAP['waitlist']}/records", {
         "records": [{"id": _as_grist_id(entry_id_val), "fields": fields}]})
+
+
+# --- Compliance checklists (Tables 31-33) ---
+
+
+def add_medication_log(fields: dict) -> dict | None:
+    """Create a medication administration log record."""
+    result = _api("POST", f"/tables/{TABLE_MAP['medication_logs']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_medication_logs(child_id_val: int | str | None = None) -> list:
+    """Return medication logs, optionally filtered by child."""
+    records = _api("GET", f"/tables/{TABLE_MAP['medication_logs']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if child_id_val is not None:
+        result = [r for r in result if str(r["fields"].get("child")) == str(child_id_val)]
+    return result
+
+
+def add_sanitation_check(fields: dict) -> dict | None:
+    """Create a sanitation checklist record."""
+    result = _api("POST", f"/tables/{TABLE_MAP['sanitation_checks']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_sanitation_checks(status: str | None = None) -> list:
+    """Return sanitation checks, optionally filtered by status."""
+    records = _api("GET", f"/tables/{TABLE_MAP['sanitation_checks']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if status:
+        result = [r for r in result if str(r["fields"].get("status", "")).lower() == status.lower()]
+    return result
+
+
+def add_sleep_safety_check(fields: dict) -> dict | None:
+    """Create a sleep safety check record."""
+    result = _api("POST", f"/tables/{TABLE_MAP['sleep_safety_checks']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_sleep_safety_checks(child_id_val: int | str | None = None,
+                            status: str | None = None) -> list:
+    """Return sleep safety checks, optionally filtered by child and/or status."""
+    records = _api("GET", f"/tables/{TABLE_MAP['sleep_safety_checks']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if child_id_val is not None:
+        result = [r for r in result if str(r["fields"].get("child")) == str(child_id_val)]
+    if status:
+        result = [r for r in result if str(r["fields"].get("status", "")).lower() == status.lower()]
+    return result
+
+
+# --- Regulatory copilot ingestion + risk scoring (Tables 34-35) ---
+
+
+def create_regulatory_rule(fields: dict) -> dict | None:
+    """Create a regulatory rule version row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['regulatory_rules']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def update_regulatory_rule(rule_row_id_val: int | str, fields: dict) -> dict | None:
+    """Patch fields on a regulatory rule row."""
+    return _api("PATCH", f"/tables/{TABLE_MAP['regulatory_rules']}/records", {
+        "records": [{"id": _as_grist_id(rule_row_id_val), "fields": fields}]})
+
+
+def get_regulatory_rules(rule_key: str | None = None, jurisdiction: str | None = None,
+                         category: str | None = None, active_only: bool = True) -> list:
+    """Return regulatory rules, optionally filtered by key/jurisdiction/category/active."""
+    records = _api("GET", f"/tables/{TABLE_MAP['regulatory_rules']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if rule_key:
+        key = rule_key.strip().lower()
+        result = [r for r in result if str(r["fields"].get("rule_key", "")).strip().lower() == key]
+    if jurisdiction:
+        region = jurisdiction.strip().lower()
+        result = [r for r in result if str(r["fields"].get("jurisdiction", "")).strip().lower() == region]
+    if category:
+        cat = category.strip().lower()
+        result = [r for r in result if str(r["fields"].get("category", "")).strip().lower() == cat]
+    if active_only:
+        result = [r for r in result if bool(r["fields"].get("active", False))]
+    return result
+
+
+def get_regulatory_rule_versions(rule_key: str) -> list:
+    """Return all versions for a rule_key, newest effective date first."""
+    versions = get_regulatory_rules(rule_key=rule_key, active_only=False)
+    return sorted(
+        versions,
+        key=lambda r: (str(r["fields"].get("effective_date", "")), str(r["fields"].get("ingested_at", ""))),
+        reverse=True,
+    )
+
+
+def find_regulatory_rule_version(rule_key: str, version: str) -> dict | None:
+    """Return a specific regulatory rule version row by key+version."""
+    candidates = get_regulatory_rules(rule_key=rule_key, active_only=False)
+    version_lc = str(version).strip().lower()
+    for row in candidates:
+        if str(row["fields"].get("version", "")).strip().lower() == version_lc:
+            return row
+    return None
+
+
+def create_regulatory_risk_assessment(fields: dict) -> dict | None:
+    """Create a regulatory risk assessment row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['regulatory_risk_assessments']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_regulatory_risk_assessments(status: str | None = None,
+                                    category: str | None = None) -> list:
+    """Return risk assessments, optionally filtered by status/category."""
+    records = _api("GET", f"/tables/{TABLE_MAP['regulatory_risk_assessments']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if status:
+        status_lc = status.strip().lower()
+        result = [r for r in result if str(r["fields"].get("status", "")).strip().lower() == status_lc]
+    if category:
+        cat_lc = category.strip().lower()
+        result = [r for r in result if str(r["fields"].get("category", "")).strip().lower() == cat_lc]
+    return result
+
+
+# --- Ops workflow freshness heartbeat (Table 36) ---
+
+
+def get_workflow_heartbeats(workflow_key: str | None = None) -> list:
+    """Return workflow heartbeat rows, optionally filtered by workflow_key."""
+    records = _api("GET", f"/tables/{TABLE_MAP['workflow_heartbeat']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if workflow_key:
+        key = str(workflow_key).strip().lower()
+        result = [r for r in result if str(r["fields"].get("workflow_key", "")).strip().lower() == key]
+    return result
+
+
+def upsert_workflow_heartbeat(workflow_key: str, fields: dict) -> dict | None:
+    """Create or update heartbeat row keyed by workflow_key."""
+    if not workflow_key:
+        return None
+    existing = get_workflow_heartbeats(workflow_key=workflow_key)
+    if existing:
+        row_id = existing[0].get("id")
+        return _api("PATCH", f"/tables/{TABLE_MAP['workflow_heartbeat']}/records", {
+            "records": [{"id": _as_grist_id(row_id), "fields": fields}]})
+    return _api("POST", f"/tables/{TABLE_MAP['workflow_heartbeat']}/records", {
+        "records": [{"fields": {"workflow_key": workflow_key, **fields}}]})
+
+
+# --- Marketing / SEO / reviews / insurance / competitive (Tables 37-40) ---
+
+
+def create_marketing_lead(fields: dict) -> dict | None:
+    """Create a marketing lead row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['marketing_leads']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_marketing_leads(channel: str | None = None, status: str | None = None) -> list:
+    """Return marketing leads, optionally filtered by channel/status."""
+    records = _api("GET", f"/tables/{TABLE_MAP['marketing_leads']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if channel:
+        channel_lc = str(channel).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("channel", "")).strip().lower() == channel_lc]
+    if status:
+        status_lc = str(status).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("status", "")).strip().lower() == status_lc]
+    return result
+
+
+def create_review_request(fields: dict) -> dict | None:
+    """Create a review request/event row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['review_requests']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_review_requests(platform: str | None = None, status: str | None = None) -> list:
+    """Return review requests, optionally filtered by platform/status."""
+    records = _api("GET", f"/tables/{TABLE_MAP['review_requests']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if platform:
+        platform_lc = str(platform).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("platform", "")).strip().lower() == platform_lc]
+    if status:
+        status_lc = str(status).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("status", "")).strip().lower() == status_lc]
+    return result
+
+
+def create_insurance_policy(fields: dict) -> dict | None:
+    """Create an insurance policy row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['insurance_policies']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_insurance_policies(status: str | None = None) -> list:
+    """Return insurance policy rows, optionally filtered by status."""
+    records = _api("GET", f"/tables/{TABLE_MAP['insurance_policies']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if status:
+        status_lc = str(status).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("status", "")).strip().lower() == status_lc]
+    return result
+
+
+def update_insurance_policy(policy_id_val: int | str, fields: dict) -> dict | None:
+    """Patch fields on an insurance policy row."""
+    return _api("PATCH", f"/tables/{TABLE_MAP['insurance_policies']}/records", {
+        "records": [{"id": _as_grist_id(policy_id_val), "fields": fields}]})
+
+
+def create_competitor_snapshot(fields: dict) -> dict | None:
+    """Create a competitor snapshot row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['competitor_snapshots']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_competitor_snapshots(competitor_name: str | None = None) -> list:
+    """Return competitor snapshots, optionally filtered by competitor_name."""
+    records = _api("GET", f"/tables/{TABLE_MAP['competitor_snapshots']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if competitor_name:
+        name_lc = str(competitor_name).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("competitor_name", "")).strip().lower() == name_lc]
+    return result
+
+
+def create_marketing_channel_spend(fields: dict) -> dict | None:
+    """Create a marketing channel spend row."""
+    result = _api("POST", f"/tables/{TABLE_MAP['marketing_channel_spend']}/records", {
+        "records": [{"fields": fields}]})
+    if not result:
+        return None
+    records = result.get("records", [])
+    return records[0] if records else None
+
+
+def get_marketing_channel_spend(channel: str | None = None,
+                                campaign: str | None = None,
+                                period_month: str | None = None) -> list:
+    """Return marketing spend rows, optionally filtered by channel/campaign/month."""
+    records = _api("GET", f"/tables/{TABLE_MAP['marketing_channel_spend']}/records")
+    if not records:
+        return []
+    result = records.get("records", [])
+    if channel:
+        channel_lc = str(channel).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("channel", "")).strip().lower() == channel_lc]
+    if campaign:
+        campaign_lc = str(campaign).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("campaign", "")).strip().lower() == campaign_lc]
+    if period_month:
+        month_lc = str(period_month).strip().lower()
+        result = [r for r in result if str(r.get("fields", {}).get("period_month", "")).strip().lower() == month_lc]
+    return result
