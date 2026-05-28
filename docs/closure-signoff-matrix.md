@@ -118,3 +118,12 @@ Rationale: P0 blockers are closed and item 11 baseline is now addressed, but ope
   - `pickup_events_count=5`
   - `pickup_verified_metadata_count=1`
   - `pickup_verified_min=1`
+
+## Verification Addendum (2026-05-28T17:59:04Z)
+- Added strict parent-scope guardrail checks in daily ops and re-ran live validation.
+- Result: **PASS**
+  - `parent_scope_probe_child=Liam`
+  - `parent_scope_deny_status=403`
+  - `parent_scope_allow_status=200`
+  - `parent_scope_portfolio_status=200`
+  - `parent_scope_portfolio_limit=1`
